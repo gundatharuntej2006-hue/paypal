@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"strconv"
 	"strings"
@@ -38,7 +39,7 @@ func Load() *Config {
 	}
 
 	intelURL := getEnv("INTEL_SERVICE_URL", "http://localhost:8000")
-	// Atul Point 2: If Render gives a bare hostport (e.g. agentguard-intel:8000), add http:// prefix
+	// If Render gives a bare hostport (e.g. agentguard-intel:8000), add http:// prefix
 	if intelURL != "" && !strings.HasPrefix(intelURL, "http://") && !strings.HasPrefix(intelURL, "https://") {
 		intelURL = "http://" + intelURL
 	}
@@ -85,9 +86,9 @@ func Load() *Config {
 		IntelServiceURL:     intelURL,
 		IntelTimeout:        time.Duration(intelTimeoutMS) * time.Millisecond,
 		IntelAPIToken:       os.Getenv("INTEL_API_TOKEN"),
-		InternalLedgerToken: getEnv("INTERNAL_LEDGER_TOKEN", "secret-gateway-token-123"),
-		AgentAuthToken:      getEnv("AGENT_AUTH_TOKEN", "agentguard-agent-token-xyz"),
-		HumanAuthToken:      getEnv("HUMAN_AUTH_TOKEN", "agentguard-human-token-xyz"),
+		InternalLedgerToken: os.Getenv("INTERNAL_LEDGER_TOKEN"),
+		AgentAuthToken:      os.Getenv("AGENT_AUTH_TOKEN"),
+		HumanAuthToken:      os.Getenv("HUMAN_AUTH_TOKEN"),
 		RiskBlockThreshold:  blockThresh,
 		RiskStepUpThreshold: stepUpThresh,
 		GatewayMode:         gatewayMode,
@@ -96,6 +97,29 @@ func Load() *Config {
 		PayPalClientSecret: clientSecret,
 		PayPalMockMode:     mockMode,
 	}
+}
+
+// Validate checks that all required security tokens and credentials are present,
+// failing immediately on missing secrets in production or live execution mode.
+func (c *Config) Validate() error {
+	if c.Env == "production" {
+		if c.AgentAuthToken == "" {
+			return errors.New("AGENT_AUTH_TOKEN is required in production: missing secret")
+		}
+		if c.HumanAuthToken == "" {
+			return errors.New("HUMAN_AUTH_TOKEN is required in production: missing secret")
+		}
+		if c.InternalLedgerToken == "" {
+			return errors.New("INTERNAL_LEDGER_TOKEN is required in production: missing secret")
+		}
+		if c.IntelAPIToken == "" {
+			return errors.New("INTEL_API_TOKEN is required in production: missing secret")
+		}
+		if c.GatewayMode == "live" && (c.PayPalClientID == "" || c.PayPalClientSecret == "") {
+			return errors.New("PAYPAL_CLIENT_ID and PAYPAL_CLIENT_SECRET are required in live production mode")
+		}
+	}
+	return nil
 }
 
 func getEnv(key, fallback string) string {

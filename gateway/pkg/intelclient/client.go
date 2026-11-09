@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -84,6 +85,9 @@ func (c *HTTPIntelClient) ScanContent(ctx context.Context, contexts []models.Sou
 		reason := fmt.Sprintf("schema_validation_failed: %v", err)
 		scanResp.Verdict = "unknown"
 		scanResp.Reason = &reason
+		scanResp.Version = "client_failclosed"
+		scanResp.Stage = "none"
+		scanResp.Confidence = 0.0
 	}
 	return &scanResp, nil
 }
@@ -126,6 +130,8 @@ func (c *HTTPIntelClient) JudgeIntent(ctx context.Context, req models.JudgeReque
 		reason := fmt.Sprintf("schema_validation_failed: %v", err)
 		judgeResp.Verdict = "unknown"
 		judgeResp.Reason = &reason
+		judgeResp.Version = "client_failclosed"
+		judgeResp.Confidence = 0.0
 	}
 	return &judgeResp, nil
 }
@@ -168,6 +174,7 @@ func (c *HTTPIntelClient) RiskScore(ctx context.Context, req models.RiskRequest)
 		reason := fmt.Sprintf("schema_validation_failed: %v", err)
 		riskResp.Status = "unknown"
 		riskResp.Reason = &reason
+		riskResp.Version = "client_failclosed"
 		riskResp.Score = nil
 	}
 	return &riskResp, nil
@@ -184,13 +191,23 @@ func ValidateScanResponse(resp *models.ScanResponse) error {
 	if resp == nil {
 		return errors.New("scan response is nil")
 	}
+	if strings.TrimSpace(resp.Version) == "" {
+		return errors.New("missing version in scan response")
+	}
 	switch resp.Verdict {
-	case "clean", "injection", "unknown":
+	case "clean", "injection":
+		if resp.Confidence < 0.0 || resp.Confidence > 1.0 {
+			return fmt.Errorf("%w: %f", ErrConfidenceOutOfRange, resp.Confidence)
+		}
+		if resp.Stage != "heuristic" && resp.Stage != "llm" && resp.Stage != "none" {
+			return fmt.Errorf("invalid stage '%s' in scan response", resp.Stage)
+		}
+	case "unknown":
+		if resp.Reason == nil || strings.TrimSpace(*resp.Reason) == "" {
+			return errors.New("unknown scan verdict must provide non-empty reason")
+		}
 	default:
 		return fmt.Errorf("%w: '%s'", ErrInvalidVerdict, resp.Verdict)
-	}
-	if resp.Confidence < 0.0 || resp.Confidence > 1.0 {
-		return fmt.Errorf("%w: %f", ErrConfidenceOutOfRange, resp.Confidence)
 	}
 	return nil
 }
@@ -199,13 +216,20 @@ func ValidateJudgeResponse(resp *models.JudgeResponse) error {
 	if resp == nil {
 		return errors.New("judge response is nil")
 	}
+	if strings.TrimSpace(resp.Version) == "" {
+		return errors.New("missing version in judge response")
+	}
 	switch resp.Verdict {
-	case "aligned", "misaligned", "unknown":
+	case "aligned", "misaligned":
+		if resp.Confidence < 0.0 || resp.Confidence > 1.0 {
+			return fmt.Errorf("%w: %f", ErrConfidenceOutOfRange, resp.Confidence)
+		}
+	case "unknown":
+		if resp.Reason == nil || strings.TrimSpace(*resp.Reason) == "" {
+			return errors.New("unknown judge verdict must provide non-empty reason")
+		}
 	default:
 		return fmt.Errorf("%w: '%s'", ErrInvalidVerdict, resp.Verdict)
-	}
-	if resp.Confidence < 0.0 || resp.Confidence > 1.0 {
-		return fmt.Errorf("%w: %f", ErrConfidenceOutOfRange, resp.Confidence)
 	}
 	return nil
 }
@@ -214,15 +238,26 @@ func ValidateRiskResponse(resp *models.RiskResponse) error {
 	if resp == nil {
 		return errors.New("risk response is nil")
 	}
-	switch resp.Status {
-	case "ok", "unknown":
-	default:
-		return fmt.Errorf("%w: '%s'", ErrInvalidRiskStatus, resp.Status)
+	if strings.TrimSpace(resp.Version) == "" {
+		return errors.New("missing version in risk response")
 	}
-	if resp.Status == "ok" && resp.Score != nil {
+	switch resp.Status {
+	case "ok":
+		if resp.Score == nil {
+			return errors.New("score must be set when risk status is 'ok'")
+		}
 		if *resp.Score < 0.0 || *resp.Score > 1.0 {
 			return fmt.Errorf("%w: %f", ErrRiskScoreOutOfRange, *resp.Score)
 		}
+	case "unknown":
+		if resp.Score != nil {
+			return errors.New("score must be null when risk status is 'unknown'")
+		}
+		if resp.Reason == nil || strings.TrimSpace(*resp.Reason) == "" {
+			return errors.New("unknown risk status must provide non-empty reason")
+		}
+	default:
+		return fmt.Errorf("%w: '%s'", ErrInvalidRiskStatus, resp.Status)
 	}
 	return nil
 }

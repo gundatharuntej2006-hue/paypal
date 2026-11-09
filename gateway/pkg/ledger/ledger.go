@@ -285,8 +285,37 @@ func (m *MemoryLedger) ReleaseBudgetReservation(ctx context.Context, mandateID s
 func (m *MemoryLedger) CommitBudgetReservation(ctx context.Context, mandateID string, paymentID string) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if resMap, ok := m.budgetReservations[mandateID]; ok {
-		delete(resMap, paymentID)
+
+	resMap, ok := m.budgetReservations[mandateID]
+	if !ok {
+		return
+	}
+	amt, exists := resMap[paymentID]
+	if !exists {
+		return
+	}
+	delete(resMap, paymentID)
+
+	pProj, ok := m.paymentProjections[paymentID]
+	isDry := false
+	if ok && pProj != nil {
+		isDry = pProj.IsDryRun
+		pProj.SpentCommitted = true
+	}
+
+	if !isDry && mandateID != "" {
+		mProj, ok := m.mandateProjections[mandateID]
+		if !ok {
+			mProj = &models.MandateProjection{
+				MandateID:  mandateID,
+				TotalSpent: "0.00",
+				Currency:   "USD",
+			}
+			m.mandateProjections[mandateID] = mProj
+		}
+		curSpent, _ := strconv.ParseFloat(mProj.TotalSpent, 64)
+		mProj.TotalSpent = fmt.Sprintf("%.2f", curSpent+amt)
+		mProj.LastUpdated = time.Now().UTC()
 	}
 }
 
@@ -414,13 +443,14 @@ func (m *MemoryLedger) applyEventToProjections(e *models.LedgerEvent) {
 			if capID, ok := data["capture_id"].(string); ok {
 				proj.PayPalCaptureID = capID
 			}
-			// Update mandate spent ONLY if NOT a dry run!
+			// Update mandate spent ONLY if NOT a dry run and NOT already transferred by commit!
 			isDry := proj.IsDryRun || e.Source == "dry_run"
 			if dVal, ok := data["dry_run"].(bool); ok && dVal {
 				isDry = true
 			}
-			if !isDry && mandateID != "" && proj.Amount != "" {
+			if !isDry && !proj.SpentCommitted && mandateID != "" && proj.Amount != "" {
 				m.updateMandateSpent(mandateID, proj.Amount, proj.Currency, e.CreatedAt)
+				proj.SpentCommitted = true
 			}
 		case "paypal.voided":
 			proj.State = "voided"
@@ -531,6 +561,7 @@ func (p *PostgresLedger) migrate() error {
 
 	ALTER TABLE projections_payments ADD COLUMN IF NOT EXISTS step_up_expires_at TIMESTAMP WITH TIME ZONE;
 	ALTER TABLE projections_payments ADD COLUMN IF NOT EXISTS step_up_consumed BOOLEAN NOT NULL DEFAULT FALSE;
+	ALTER TABLE projections_payments ADD COLUMN IF NOT EXISTS spent_committed BOOLEAN NOT NULL DEFAULT FALSE;
 	ALTER TABLE projections_payments ADD COLUMN IF NOT EXISTS is_dry_run BOOLEAN NOT NULL DEFAULT FALSE;
 
 	CREATE TABLE IF NOT EXISTS projections_mandates (
@@ -728,11 +759,11 @@ func (p *PostgresLedger) applyEventToProjectionsTx(ctx context.Context, tx *sql.
 			return err
 		}
 
-		// Update mandate spent ONLY if NOT a dry run!
-		var isDryRun bool
+		// Update mandate spent ONLY if NOT a dry run and NOT already transferred by commit!
+		var isDryRun, spentCommitted bool
 		var amountStr, currency string
-		row := tx.QueryRowContext(ctx, "SELECT is_dry_run, amount, currency FROM projections_payments WHERE payment_id = $1", paymentID)
-		_ = row.Scan(&isDryRun, &amountStr, &currency)
+		row := tx.QueryRowContext(ctx, "SELECT is_dry_run, spent_committed, amount, currency FROM projections_payments WHERE payment_id = $1", paymentID)
+		_ = row.Scan(&isDryRun, &spentCommitted, &amountStr, &currency)
 
 		if e.Source == "dry_run" {
 			isDryRun = true
@@ -741,7 +772,7 @@ func (p *PostgresLedger) applyEventToProjectionsTx(ctx context.Context, tx *sql.
 			isDryRun = true
 		}
 
-		if !isDryRun && mandateID != "" && amountStr != "" {
+		if !isDryRun && !spentCommitted && mandateID != "" && amountStr != "" {
 			amt, _ := strconv.ParseFloat(amountStr, 64)
 			if amt > 0 {
 				_, err = tx.ExecContext(ctx, `
@@ -751,6 +782,7 @@ func (p *PostgresLedger) applyEventToProjectionsTx(ctx context.Context, tx *sql.
 						total_spent = (CAST(projections_mandates.total_spent AS NUMERIC) + CAST(EXCLUDED.total_spent AS NUMERIC))::TEXT,
 						last_updated = EXCLUDED.last_updated
 				`, mandateID, fmt.Sprintf("%.2f", amt), currency, e.CreatedAt)
+				_, _ = tx.ExecContext(ctx, `UPDATE projections_payments SET spent_committed = TRUE WHERE payment_id = $1`, paymentID)
 			}
 		}
 
@@ -1028,7 +1060,35 @@ func (p *PostgresLedger) ReleaseBudgetReservation(ctx context.Context, mandateID
 }
 
 func (p *PostgresLedger) CommitBudgetReservation(ctx context.Context, mandateID string, paymentID string) {
-	_, _ = p.db.ExecContext(ctx, `DELETE FROM projections_budget_reservations WHERE payment_id = $1`, paymentID)
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return
+	}
+	defer tx.Rollback()
+
+	var amount float64
+	row := tx.QueryRowContext(ctx, `DELETE FROM projections_budget_reservations WHERE payment_id = $1 RETURNING amount`, paymentID)
+	if err := row.Scan(&amount); err == nil && amount > 0 {
+		var isDryRun bool
+		var pMandateID string
+		pRow := tx.QueryRowContext(ctx, `SELECT is_dry_run, mandate_id FROM projections_payments WHERE payment_id = $1 FOR UPDATE`, paymentID)
+		_ = pRow.Scan(&isDryRun, &pMandateID)
+		if pMandateID != "" {
+			mandateID = pMandateID
+		}
+		if !isDryRun && mandateID != "" {
+			_, _ = tx.ExecContext(ctx, `
+				INSERT INTO projections_mandates (mandate_id, principal_id, total_spent, currency, last_updated)
+				VALUES ($1, '', $2, 'USD', $3)
+				ON CONFLICT (mandate_id) DO UPDATE SET
+					total_spent = (CAST(projections_mandates.total_spent AS NUMERIC) + CAST(EXCLUDED.total_spent AS NUMERIC))::TEXT,
+					last_updated = EXCLUDED.last_updated
+			`, mandateID, fmt.Sprintf("%.2f", amount), time.Now().UTC())
+
+			_, _ = tx.ExecContext(ctx, `UPDATE projections_payments SET spent_committed = TRUE WHERE payment_id = $1`, paymentID)
+		}
+	}
+	_ = tx.Commit()
 }
 
 func (p *PostgresLedger) Replay(ctx context.Context) error {
@@ -1064,9 +1124,9 @@ func (p *PostgresLedger) Replay(ctx context.Context) error {
 
 	for _, pr := range mem.paymentProjections {
 		_, err := tx.ExecContext(ctx,
-			`INSERT INTO projections_payments (payment_id, mandate_id, merchant_id, amount, currency, state, decision, risk_score, step_up_token, step_up_expires_at, step_up_consumed, is_dry_run, paypal_order_id, paypal_auth_id, paypal_capture_id, created_at, updated_at)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17)`,
-			pr.PaymentID, pr.MandateID, pr.MerchantID, pr.Amount, pr.Currency, pr.State, pr.Decision, pr.RiskScore, pr.StepUpToken, pr.StepUpExpiresAt, pr.StepUpConsumed, pr.IsDryRun, pr.PayPalOrderID, pr.PayPalAuthID, pr.PayPalCaptureID, pr.CreatedAt, pr.UpdatedAt,
+			`INSERT INTO projections_payments (payment_id, mandate_id, merchant_id, amount, currency, state, decision, risk_score, step_up_token, step_up_expires_at, step_up_consumed, spent_committed, is_dry_run, paypal_order_id, paypal_auth_id, paypal_capture_id, created_at, updated_at)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)`,
+			pr.PaymentID, pr.MandateID, pr.MerchantID, pr.Amount, pr.Currency, pr.State, pr.Decision, pr.RiskScore, pr.StepUpToken, pr.StepUpExpiresAt, pr.StepUpConsumed, pr.SpentCommitted, pr.IsDryRun, pr.PayPalOrderID, pr.PayPalAuthID, pr.PayPalCaptureID, pr.CreatedAt, pr.UpdatedAt,
 		)
 		if err != nil {
 			return err

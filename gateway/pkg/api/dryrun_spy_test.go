@@ -560,3 +560,253 @@ func TestDryRunSpy_ReplayAndRecoveryConsistency(t *testing.T) {
 		t.Fatalf("expected 0.00 spent after replay, got %.2f", totalSpent)
 	}
 }
+
+// Test 9: GATEWAY_MODE=dryrun forces dry-run provenance even when request omits dry_run flag
+func TestDryRunSpy_GatewayModeDryRunForcesProvenance(t *testing.T) {
+	spy := paypal.NewSpyClient(paypal.NewMockClient())
+	cfg := &config.Config{
+		Port:                "8080",
+		Env:                 "development",
+		GatewayMode:         "dryrun", // Deployment level dryrun mode
+		RiskBlockThreshold:  0.65,
+		RiskStepUpThreshold: 0.35,
+	}
+	nonceStore := mandate.NewMemoryNonceStore()
+	led := ledger.NewMemoryLedger()
+	registry := mandate.NewMemoryPrincipalRegistry()
+	verifier := mandate.NewVerifier(nonceStore, led, registry)
+	sm := statemachine.NewStateMachine()
+	de := policy.NewDecisionEngine(policy.DefaultDecisionConfig())
+	broker := events.NewBroker()
+
+	srv := NewServer(cfg, led, verifier, sm, de, spy, intelclient.NewStubIntelClient(), broker)
+	handler := SetupRouter(srv)
+
+	m := helperCreateSignedMandate(t, nil)
+	verifier.RegisterPrincipal(m.PrincipalID, m.PublicKey)
+
+	reqPayload := models.PaymentIntentRequest{
+		Mandate:        m,
+		AgentID:        m.AgentID,
+		MerchantID:     "merchant_staples",
+		Amount:         "14.99",
+		Currency:       "USD",
+		Category:       "office_supplies",
+		Items:          []models.Item{{Name: "Paper Ream", Qty: 1, UnitPrice: "14.99"}},
+		AgentReasoning: "Testing deployment-level dryrun provenance forcing",
+		IdempotencyKey: "force_dryrun_prov_001",
+		DryRun:         false, // Request explicitly says false!
+	}
+
+	body, _ := json.Marshal(reqPayload)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/v1/payments/intents", bytes.NewBuffer(body)))
+
+	var dec models.DecisionResponse
+	_ = json.Unmarshal(w.Body.Bytes(), &dec)
+
+	// Decision must have DryRun forced to true
+	if !dec.DryRun {
+		t.Fatalf("expected dec.DryRun=true when GATEWAY_MODE=dryrun, got false")
+	}
+
+	// Projection must have IsDryRun forced to true
+	proj, err := led.GetPaymentProjection(context.Background(), dec.PaymentID)
+	if err != nil || !proj.IsDryRun {
+		t.Fatalf("expected projection IsDryRun=true")
+	}
+
+	// Live PayPal client calls must be strictly 0
+	if spy.TotalCalls() != 0 {
+		t.Fatalf("expected 0 calls, got %d", spy.TotalCalls())
+	}
+}
+
+// Test 10: Nonce Isolation between Dry-Run and Live Mode
+func TestDryRunSpy_NonceIsolationBetweenDryRunAndLive(t *testing.T) {
+	_, _, verifier, _, handler := setupSpyTestServer(t)
+
+	// 1. Create a mandate with a specific fixed nonce
+	m := helperCreateSignedMandate(t, func(m *models.Mandate) {
+		m.Nonce = "isolated_test_nonce_12345"
+	})
+	verifier.RegisterPrincipal(m.PrincipalID, m.PublicKey)
+
+	// Submit in DRY-RUN mode
+	dryPayload := models.PaymentIntentRequest{
+		Mandate:        m,
+		AgentID:        m.AgentID,
+		MerchantID:     "merchant_staples",
+		Amount:         "10.00",
+		Currency:       "USD",
+		Category:       "office_supplies",
+		Items:          []models.Item{{Name: "Pen", Qty: 1, UnitPrice: "10.00"}},
+		AgentReasoning: "Dry-run nonce burn test",
+		IdempotencyKey: "dryrun_nonce_idemp_1",
+		DryRun:         true,
+	}
+	body, _ := json.Marshal(dryPayload)
+	wDry := httptest.NewRecorder()
+	handler.ServeHTTP(wDry, httptest.NewRequest(http.MethodPost, "/v1/payments/intents", bytes.NewBuffer(body)))
+
+	var decDry models.DecisionResponse
+	_ = json.Unmarshal(wDry.Body.Bytes(), &decDry)
+	if decDry.Decision != models.DecisionAllow {
+		t.Fatalf("expected dry-run allow, got %s (reasons: %v)", decDry.Decision, decDry.Reasons)
+	}
+
+	// Re-submitting the exact same nonce in DRY-RUN mode must be REJECTED (replay protection within namespace)
+	dryPayload.IdempotencyKey = "dryrun_nonce_idemp_2"
+	bodyDryReplay, _ := json.Marshal(dryPayload)
+	wDryReplay := httptest.NewRecorder()
+	handler.ServeHTTP(wDryReplay, httptest.NewRequest(http.MethodPost, "/v1/payments/intents", bytes.NewBuffer(bodyDryReplay)))
+	var decDryReplay models.DecisionResponse
+	_ = json.Unmarshal(wDryReplay.Body.Bytes(), &decDryReplay)
+	if decDryReplay.Decision != models.DecisionBlock {
+		t.Fatalf("expected replay rejection in dry-run mode, got %s", decDryReplay.Decision)
+	}
+
+	// Submitting the SAME mandate and nonce in LIVE mode MUST SUCCEED (dry-run did not burn live nonce!)
+	livePayload := models.PaymentIntentRequest{
+		Mandate:        m,
+		AgentID:        m.AgentID,
+		MerchantID:     "merchant_staples",
+		Amount:         "10.00",
+		Currency:       "USD",
+		Category:       "office_supplies",
+		Items:          []models.Item{{Name: "Pen", Qty: 1, UnitPrice: "10.00"}},
+		AgentReasoning: "Live submission with same mandate",
+		IdempotencyKey: "live_nonce_idemp_1",
+		DryRun:         false, // LIVE MODE
+	}
+	bodyLive, _ := json.Marshal(livePayload)
+	wLive := httptest.NewRecorder()
+	handler.ServeHTTP(wLive, httptest.NewRequest(http.MethodPost, "/v1/payments/intents", bytes.NewBuffer(bodyLive)))
+
+	var decLive models.DecisionResponse
+	_ = json.Unmarshal(wLive.Body.Bytes(), &decLive)
+	if decLive.Decision != models.DecisionAllow {
+		t.Fatalf("expected live submission to succeed with unburned live nonce, got %s (reasons: %v)", decLive.Decision, decLive.Reasons)
+	}
+}
+
+// Test 11: Crash Recovery and Atomic Step-Up Token Consumption
+func TestDryRunSpy_CrashRecoveryIdempotentApproval(t *testing.T) {
+	_, spy, verifier, led, handler := setupSpyTestServer(t)
+
+	m := helperCreateSignedMandate(t, func(m *models.Mandate) {
+		m.StepUpOver = "10.00"
+		m.MaxPerTxn = "50.00"
+		m.MaxTotal = "100.00"
+	})
+	verifier.RegisterPrincipal(m.PrincipalID, m.PublicKey)
+
+	reqPayload := models.PaymentIntentRequest{
+		Mandate:        m,
+		AgentID:        m.AgentID,
+		MerchantID:     "merchant_staples",
+		Amount:         "25.00",
+		Currency:       "USD",
+		Category:       "office_supplies",
+		Items:          []models.Item{{Name: "Paper Ream", Qty: 1, UnitPrice: "25.00"}},
+		AgentReasoning: "Step up approval idempotency test",
+		IdempotencyKey: "crash_recovery_stepup_idemp",
+		DryRun:         true,
+	}
+
+	body, _ := json.Marshal(reqPayload)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/v1/payments/intents", bytes.NewBuffer(body)))
+
+	var dec models.DecisionResponse
+	_ = json.Unmarshal(w.Body.Bytes(), &dec)
+	if dec.StepUpToken == "" {
+		t.Fatalf("expected step_up_token, got: %+v", dec)
+	}
+
+	// 1. First approval call: succeeds
+	apprBody, _ := json.Marshal(models.StepUpApprovalRequest{StepUpToken: dec.StepUpToken})
+	wAppr1 := httptest.NewRecorder()
+	handler.ServeHTTP(wAppr1, httptest.NewRequest(http.MethodPost, "/v1/payments/"+dec.PaymentID+"/approve", bytes.NewBuffer(apprBody)))
+	if wAppr1.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on first approval, got %d: %s", wAppr1.Code, wAppr1.Body.String())
+	}
+	var res1 map[string]interface{}
+	_ = json.Unmarshal(wAppr1.Body.Bytes(), &res1)
+	capID1, _ := res1["capture_id"].(string)
+	if capID1 == "" {
+		t.Fatalf("expected non-empty capture_id on approval")
+	}
+
+	// 2. Simulated retry with same consumed token: must receive 409 Conflict
+	wAppr2 := httptest.NewRecorder()
+	handler.ServeHTTP(wAppr2, httptest.NewRequest(http.MethodPost, "/v1/payments/"+dec.PaymentID+"/approve", bytes.NewBuffer(apprBody)))
+	if wAppr2.Code != http.StatusConflict {
+		t.Fatalf("expected 409 Conflict on consumed token replay, got %d: %s", wAppr2.Code, wAppr2.Body.String())
+	}
+
+	// 3. Projection in ledger must remain captured with same capture ID
+	proj, err := led.GetPaymentProjection(context.Background(), dec.PaymentID)
+	if err != nil || proj.State != "captured" || proj.PayPalCaptureID != capID1 {
+		t.Fatalf("expected projection to remain captured with %s, got %+v", capID1, proj)
+	}
+
+	// 4. Live calls must be strictly 0
+	if spy.TotalCalls() != 0 {
+		t.Fatalf("expected 0 live calls, got %d", spy.TotalCalls())
+	}
+}
+
+// Test 12: Intelligence Response Validation - Incomplete Schemas
+func TestIntelligenceResponseValidation_IncompleteSchemas(t *testing.T) {
+	// Missing version
+	scanMissingVersion := &models.ScanResponse{
+		Verdict:    "clean",
+		Confidence: 0.9,
+		Stage:      "heuristic",
+	}
+	if err := intelclient.ValidateScanResponse(scanMissingVersion); err == nil {
+		t.Fatalf("expected error for scan response missing version")
+	}
+
+	// Invalid confidence
+	scanBadConf := &models.ScanResponse{
+		Version:    "scan_v1",
+		Verdict:    "clean",
+		Confidence: 1.5,
+		Stage:      "heuristic",
+	}
+	if err := intelclient.ValidateScanResponse(scanBadConf); err == nil {
+		t.Fatalf("expected error for scan response confidence > 1.0")
+	}
+
+	// Missing reason on unknown verdict
+	scanUnknownNoReason := &models.ScanResponse{
+		Version: "scan_v1",
+		Verdict: "unknown",
+	}
+	if err := intelclient.ValidateScanResponse(scanUnknownNoReason); err == nil {
+		t.Fatalf("expected error for unknown scan without reason")
+	}
+
+	// Risk ok status but missing score
+	riskOkNoScore := &models.RiskResponse{
+		Version: "risk_v1",
+		Status:  "ok",
+		Score:   nil,
+	}
+	if err := intelclient.ValidateRiskResponse(riskOkNoScore); err == nil {
+		t.Fatalf("expected error for risk ok status with null score")
+	}
+
+	// Risk unknown status but with score
+	score := 0.2
+	riskUnknownWithScore := &models.RiskResponse{
+		Version: "risk_v1",
+		Status:  "unknown",
+		Score:   &score,
+	}
+	if err := intelclient.ValidateRiskResponse(riskUnknownWithScore); err == nil {
+		t.Fatalf("expected error for risk unknown status with non-null score")
+	}
+}

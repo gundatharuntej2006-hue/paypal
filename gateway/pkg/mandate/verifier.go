@@ -267,8 +267,12 @@ func (v *Verifier) VerifyMandate(req *models.PaymentIntentRequest, now time.Time
 		return &VerificationResult{Valid: false, FailedReason: ErrForgedSignature.Error()}, ErrForgedSignature
 	}
 
-	// 4. Nonce replay protection
-	ok, err := v.nonceStore.CheckAndConsume(m.Nonce, m.MandateID)
+	// 4. Nonce replay protection (namespaced so dry-run never contaminates live nonces)
+	nonceKey := "live:" + m.Nonce
+	if req.DryRun {
+		nonceKey = "dryrun:" + m.Nonce
+	}
+	ok, err := v.nonceStore.CheckAndConsume(nonceKey, m.MandateID)
 	if err != nil || !ok {
 		return &VerificationResult{Valid: false, FailedReason: ErrNonceReplayed.Error()}, ErrNonceReplayed
 	}

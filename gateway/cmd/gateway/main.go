@@ -23,7 +23,10 @@ import (
 
 func main() {
 	cfg := config.Load()
-	log.Printf("[gateway] starting AgentGuard Gateway on port %s (env: %s)", cfg.Port, cfg.Env)
+	if err := cfg.Validate(); err != nil {
+		log.Fatalf("[gateway] configuration startup error: %v", err)
+	}
+	log.Printf("[gateway] starting AgentGuard Gateway on port %s (env: %s, mode: %s)", cfg.Port, cfg.Env, cfg.GatewayMode)
 
 	// 1. Initialize Ledger
 	var led ledger.Ledger

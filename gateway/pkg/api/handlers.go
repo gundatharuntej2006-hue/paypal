@@ -47,14 +47,21 @@ func NewServer(
 	intel intelclient.IntelClient,
 	broker *events.Broker,
 ) *Server {
+	actualPP := pp
+	dryClient := paypal.NewDryRunClient()
+	// When GATEWAY_MODE=dryrun, structurally force both clients to DryRunClient
+	if cfg != nil && cfg.GatewayMode == "dryrun" {
+		actualPP = dryClient
+	}
+
 	return &Server{
 		cfg:          cfg,
 		ledger:       led,
 		verifier:     ver,
 		stateMachine: sm,
 		decisionEng:  de,
-		paypalClient: pp,
-		dryRunClient: paypal.NewDryRunClient(),
+		paypalClient: actualPP,
+		dryRunClient: dryClient,
 		intelClient:  intel,
 		broker:       broker,
 	}
@@ -63,6 +70,9 @@ func NewServer(
 // SetDryRunClient allows tests to inject an instrumented dry-run client.
 func (s *Server) SetDryRunClient(c paypal.Client) {
 	s.dryRunClient = c
+	if s.cfg != nil && s.cfg.GatewayMode == "dryrun" {
+		s.paypalClient = c
+	}
 }
 
 // emit records an event in the ledger and broadcasts it to the SSE broker.
@@ -149,7 +159,8 @@ func (s *Server) handlePaymentIntent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	isDryRun := req.DryRun || r.Header.Get("X-Dry-Run") == "true" || r.URL.Query().Get("dry_run") == "true"
+	isDryRun := s.cfg.GatewayMode == "dryrun" || req.DryRun || r.Header.Get("X-Dry-Run") == "true" || r.URL.Query().Get("dry_run") == "true"
+	req.DryRun = isDryRun
 
 	// Fix 5: Empty idempotency key rejection
 	idempKey := strings.TrimSpace(req.IdempotencyKey)
@@ -663,6 +674,10 @@ func (s *Server) handleApprovePayment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if s.cfg.GatewayMode == "dryrun" {
+		proj.IsDryRun = true
+	}
+
 	// Point 1 & 4: Dry-Run Isolation on step-up approval route
 	if proj.IsDryRun {
 		authID := proj.PayPalAuthID
@@ -676,6 +691,7 @@ func (s *Server) handleApprovePayment(w http.ResponseWriter, r *http.Request) {
 
 		capResp, capErr := s.dryRunClient.CaptureAuthorization(ctx, authID, proj.Amount, proj.Currency, true, "dryrun_cap_stepup:"+paymentID)
 		if capErr != nil || capResp == nil || capResp.Status != "COMPLETED" {
+			s.ledger.ReleaseBudgetReservation(ctx, proj.MandateID, paymentID)
 			_ = s.stateMachine.Transition(paymentID, statemachine.StateRejected)
 			_, _ = s.emit(ctx, "paypal.capture_failed", &paymentID, &proj.MandateID, nil, "dry_run", map[string]interface{}{
 				"error": fmt.Sprintf("dry-run capture failed: %v", capErr),
@@ -684,6 +700,7 @@ func (s *Server) handleApprovePayment(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		s.ledger.CommitBudgetReservation(ctx, proj.MandateID, paymentID)
 		_ = s.stateMachine.Transition(paymentID, statemachine.StateCaptured)
 
 		// Record dry-run approval
@@ -718,6 +735,7 @@ func (s *Server) handleApprovePayment(w http.ResponseWriter, r *http.Request) {
 	if authID == "" && proj.PayPalOrderID != "" {
 		authorizedID, authErr := s.paypalClient.AuthorizeOrder(ctx, proj.PayPalOrderID, "auth_stepup:"+paymentID)
 		if authErr != nil {
+			s.ledger.ReleaseBudgetReservation(ctx, proj.MandateID, paymentID)
 			log.Printf("[gateway] step-up authorize failed: %v", authErr)
 			http.Error(w, fmt.Sprintf("paypal authorization failed: %v", authErr), http.StatusBadGateway)
 			return
@@ -732,6 +750,7 @@ func (s *Server) handleApprovePayment(w http.ResponseWriter, r *http.Request) {
 	// Fix 4: CRITICAL - Only report approved if CaptureAuthorization actually succeeds with status COMPLETED!
 	capResp, capErr := s.paypalClient.CaptureAuthorization(ctx, authID, proj.Amount, proj.Currency, true, "cap_stepup:"+paymentID)
 	if capErr != nil || capResp == nil || capResp.Status != "COMPLETED" {
+		s.ledger.ReleaseBudgetReservation(ctx, proj.MandateID, paymentID)
 		log.Printf("[gateway] step-up capture failed: %v, resp: %+v", capErr, capResp)
 		_ = s.stateMachine.Transition(paymentID, statemachine.StateRejected)
 		_, _ = s.emit(ctx, "paypal.capture_failed", &paymentID, &proj.MandateID, nil, "paypal", map[string]interface{}{
@@ -741,7 +760,8 @@ func (s *Server) handleApprovePayment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// All succeeded
+	// All succeeded - commit budget reservation into permanent spending
+	s.ledger.CommitBudgetReservation(ctx, proj.MandateID, paymentID)
 	_ = s.stateMachine.Transition(paymentID, statemachine.StateCaptured)
 	_, _ = s.emit(ctx, "payment.step_up_token_consumed", &paymentID, &proj.MandateID, nil, "human", map[string]interface{}{
 		"payment_id": paymentID,
@@ -786,6 +806,13 @@ func (s *Server) handleRejectPayment(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "payment projection not found", http.StatusNotFound)
 		return
 	}
+
+	if s.cfg.GatewayMode == "dryrun" {
+		proj.IsDryRun = true
+	}
+
+	// Always release held budget reservation on rejection
+	s.ledger.ReleaseBudgetReservation(ctx, proj.MandateID, paymentID)
 
 	_ = s.stateMachine.Transition(paymentID, statemachine.StateRejected)
 
