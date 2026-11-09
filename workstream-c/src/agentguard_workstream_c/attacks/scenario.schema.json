@@ -1,0 +1,210 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Workstream C internal scenario library v1 (not a gateway contract)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema_version",
+    "scenarios"
+  ],
+  "properties": {
+    "schema_version": {
+      "const": 1,
+      "type": "integer"
+    },
+    "scenarios": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "description",
+          "attack_vector",
+          "task",
+          "scenario_id",
+          "category",
+          "expected_decision",
+          "expected_catching_layer",
+          "severity",
+          "tags",
+          "input"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 10000
+          },
+          "description": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 10000
+          },
+          "attack_vector": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 10000
+          },
+          "task": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 10000
+          },
+          "scenario_id": {
+            "type": "string",
+            "pattern": "^[a-z][a-z0-9_]{2,79}$"
+          },
+          "category": {
+            "enum": [
+              "indirect_prompt_injection",
+              "authority_attacks",
+              "budget_evasion",
+              "merchant_attacks",
+              "intent_drift",
+              "operational_attacks",
+              "benign"
+            ]
+          },
+          "expected_decision": {
+            "enum": [
+              "allow",
+              "step_up",
+              "block"
+            ]
+          },
+          "expected_catching_layer": {
+            "enum": [
+              "mandate",
+              "injection",
+              "intent",
+              "risk",
+              "idempotency",
+              "state_machine",
+              null
+            ]
+          },
+          "severity": {
+            "enum": [
+              "none",
+              "low",
+              "medium",
+              "high",
+              "critical"
+            ]
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 10000
+            },
+            "uniqueItems": true,
+            "minItems": 1
+          },
+          "input": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "merchant_id",
+              "product_id",
+              "unit_price",
+              "amount",
+              "budget",
+              "max_per_txn",
+              "prior_spend",
+              "quantity",
+              "currency",
+              "allowed_merchants",
+              "reader_mode",
+              "fixture_refs",
+              "payload",
+              "operations"
+            ],
+            "properties": {
+              "merchant_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 10000
+              },
+              "product_id": {
+                "type": "string",
+                "minLength": 1,
+                "maxLength": 10000
+              },
+              "unit_price": {
+                "type": "string",
+                "pattern": "^[0-9]{1,12}(\\.[0-9]{1,2})?$"
+              },
+              "amount": {
+                "type": "string",
+                "pattern": "^[0-9]{1,12}(\\.[0-9]{1,2})?$"
+              },
+              "budget": {
+                "type": "string",
+                "pattern": "^[0-9]{1,12}(\\.[0-9]{1,2})?$"
+              },
+              "max_per_txn": {
+                "type": "string",
+                "pattern": "^[0-9]{1,12}(\\.[0-9]{1,2})?$"
+              },
+              "prior_spend": {
+                "type": "string",
+                "pattern": "^[0-9]{1,12}(\\.[0-9]{1,2})?$"
+              },
+              "quantity": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 1000
+              },
+              "currency": {
+                "type": "string",
+                "pattern": "^[A-Z]{3}$"
+              },
+              "allowed_merchants": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 10000
+                },
+                "uniqueItems": true,
+                "minItems": 1
+              },
+              "reader_mode": {
+                "enum": [
+                  "visible_text",
+                  "raw_html"
+                ]
+              },
+              "fixture_refs": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 10000
+                },
+                "uniqueItems": true
+              },
+              "payload": {
+                "type": "string",
+                "maxLength": 10000
+              },
+              "operations": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 10000
+                },
+                "uniqueItems": true,
+                "minItems": 1
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

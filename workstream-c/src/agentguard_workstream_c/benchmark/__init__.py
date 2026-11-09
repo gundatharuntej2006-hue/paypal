@@ -1,1 +1,4 @@
-"""Future scenario execution, evaluation, and JSON and Markdown benchmark reports."""
+"""Offline scenario validation, synthetic execution, metrics and ablation reports.
+
+No payment or intelligence adapter is provided. Expected results are hypotheses.
+"""

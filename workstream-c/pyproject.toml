@@ -17,6 +17,9 @@ agent = ["langgraph>=1.2.20,<2.0"]
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+"agentguard_workstream_c.attacks" = ["scenario.schema.json", "scenarios/*.json"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
