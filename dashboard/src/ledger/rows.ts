@@ -19,6 +19,7 @@ interface PaymentFacts {
   decision?: Decision;
   risk?: number;
   reasons?: string[];
+  humanReview?: string;
   checks: Partial<Record<Layer, Verdict>>;
   paypal: { order_id?: string; authorization_id?: string; capture_id?: string };
 }
@@ -87,6 +88,9 @@ function updateFacts(previous: PaymentFacts | undefined, event: EventEnvelope): 
     decision: decision ?? previous?.decision,
     risk: asNumber(payload.risk_score) ?? (event.type === 'risk.scored' ? asNumber(payload.score) : undefined) ?? previous?.risk,
     reasons: asTexts(payload.reasons) ?? previous?.reasons,
+    humanReview: event.type === 'human.approved' ? 'Human approved' :
+      event.type === 'human.rejected' ? ['Human rejected', rationale].filter(Boolean).join(': ') :
+      event.type === 'decision.made' ? undefined : previous?.humanReview,
     checks,
     paypal: {
       order_id: asText(paypal.order_id) ?? asText(payload.order_id) ?? previous?.paypal.order_id,

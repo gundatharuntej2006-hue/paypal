@@ -32,6 +32,7 @@ const theme = themeQuartz.withParams({
 const displayTime = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' });
 const money = (row: LedgerRow) => row.amount ? [row.currency, row.amount].filter(Boolean).join(' ') : '—';
 const decisionName = (row: LedgerRow) => row.decision ? decisionLabels[row.decision] : 'Pending';
+const rowReasons = (row: LedgerRow) => [row.humanReview, ...(row.reasons ?? [])].filter(Boolean).join(' · ');
 const merchantName = (row: LedgerRow) => row.merchant ?? 'Unknown merchant';
 
 function DecisionCell({ data }: CustomCellRendererProps<LedgerRow>) {
@@ -47,7 +48,7 @@ const columns: ColDef<LedgerRow>[] = [
   { field: 'type', headerName: 'Event type', minWidth: 160, flex: 1 },
   { field: 'decision', headerName: 'Decision', width: 116, cellRenderer: DecisionCell, valueGetter: ({ data }) => data && decisionName(data) },
   { field: 'risk', headerName: 'Risk score', width: 122, filter: 'agNumberColumnFilter', valueFormatter: ({ value }) => value == null ? '—' : value.toFixed(2) },
-  { headerName: 'Reasons', minWidth: 180, flex: 2, valueGetter: ({ data }) => data?.reasons?.join(' · ') || '—' },
+  { headerName: 'Reasons', minWidth: 180, flex: 2, valueGetter: ({ data }) => (data && rowReasons(data)) || '—' },
 ];
 const defaults: ColDef<LedgerRow> = { sortable: true, resizable: true, filter: 'agTextColumnFilter', enableCellChangeFlash: true };
 
@@ -80,7 +81,7 @@ function Details({ row, onClose }: { row: LedgerRow; onClose: () => void }) {
     </div>
     <p>{merchantName(row)} · {money(row)}</p>
     <span className={'pill ' + (row.decision ?? '')}>{decisionName(row)}</span>
-    {row.reasons && <p>{row.reasons.join(' · ')}</p>}
+    {rowReasons(row) && <p>{rowReasons(row)}</p>}
     <h3>Layer verdicts</h3>
     <ul className="ledger-verdicts">{layers.map(({ key, label }) => {
       const verdict = row.checks[key];
@@ -135,7 +136,7 @@ export function Ledger({ events, connected }: { events: EventEnvelope[]; connect
   const rows = source.filter((row) =>
     (!decisionFilter.length || decisionFilter.includes(decisionName(row))) &&
     (!merchantFilter.length || merchantFilter.includes(merchantName(row))) &&
-    (!search || [row.paymentId, merchantName(row), money(row), row.type, decisionName(row), row.risk, row.reasons?.join(' ')]
+    (!search || [row.paymentId, merchantName(row), money(row), row.type, decisionName(row), row.risk, rowReasons(row)]
       .some((value) => String(value ?? '').toLowerCase().includes(search))));
   const groups = new Map<string, LedgerRow[]>();
   if (group !== 'none') for (const row of rows) {

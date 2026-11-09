@@ -1,13 +1,15 @@
+import { Approvals } from './approvals/Approvals';
+import { useApprovalInbox } from './approvals/inbox';
 import { PaymentRoute } from './payments/PaymentDetail';
 import { Ledger } from './ledger/Ledger';
-import { appendEvent, decisionLabels } from './ledger/rows';
+import { appendEvent } from './ledger/rows';
 import { CopyButton, MandateBuilder } from './mandates/MandateBuilder';
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Link, NavLink, Navigate, Route, Routes } from 'react-router-dom';
 import { client, useStub } from './api/client';
-import type { Payment } from './api/models';
-import type { Decision, EventEnvelope } from './contracts/types';
+
+import type { EventEnvelope } from './contracts/types';
 
 const pages = [
   { path: '/mandates', label: 'Mandates', icon: '◇' },
@@ -20,7 +22,6 @@ const percent = (value: number) => new Intl.NumberFormat(undefined, { style: 'pe
 const amount = (value: string, currency: string) =>
   new Intl.NumberFormat(undefined, { style: 'currency', currency }).format(Number(value));
 const date = (value: string) => new Date(value).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
-const detailPath = (id: string) => '/payments/' + encodeURIComponent(id);
 const errorText = (error: unknown) => error instanceof Error ? error.message : 'An unexpected error occurred.';
 
 function useData<T>(load: () => Promise<T>) {
@@ -57,10 +58,6 @@ function Page({ label, title, description, children }: {
     </header>
     {children}
   </>;
-}
-
-function DecisionBadge({ decision }: { decision: Decision }) {
-  return <span className={'pill ' + decision}>{decisionLabels[decision]}</span>;
 }
 
 function ConnectionStatus({ connected }: { connected: boolean }) {
@@ -103,39 +100,6 @@ function Mandates() {
   </Page>;
 }
 
-function Approvals() {
-  const state = useData(client.listApprovals);
-  const [pending, setPending] = useState<string | null>(null);
-  const [error, setError] = useState('');
-  async function review(payment: Payment, action: 'approve' | 'reject') {
-    setPending(payment.payment_id);
-    setError('');
-    try {
-      await client[action](payment.payment_id);
-      state.retry();
-    } catch (error) {
-      setError(errorText(error));
-    } finally {
-      setPending(null);
-    }
-  }
-
-  return <Page label="Review" title="Approvals" description="Review payments that require a human decision before they can proceed.">
-    {error && <p className="panel notice" role="alert">{error}</p>}
-    <DataView state={state} empty="There are no payments awaiting approval.">{(payments) => payments.length > 0 &&
-      <div className="cards">{payments.map((payment) => <article className="panel card" key={payment.payment_id}>
-        <DecisionBadge decision="step_up" /><h2>{payment.merchant_id}</h2>
-        <p>{amount(payment.amount, payment.currency)} · <Link to={detailPath(payment.payment_id)}>{payment.payment_id}</Link></p>
-        <p>{payment.reasons.join(' · ')}</p>
-        <div className="actions">
-          <button disabled={pending !== null} onClick={() => void review(payment, 'approve')}>Approve</button>
-          <button className="secondary" disabled={pending !== null} onClick={() => void review(payment, 'reject')}>Reject</button>
-        </div>
-      </article>)}</div>}
-    </DataView>
-  </Page>;
-}
-
 function Benchmark() {
   const state = useData(client.getBenchmarkReport);
   return <Page label="Evaluation" title="Benchmark" description={useStub ? 'Illustrative results from the demo dataset.' : 'Attack coverage, false positives, and decision latency.'}>
@@ -161,6 +125,7 @@ function Benchmark() {
 export function App() {
   const [connected, setConnected] = useState(false);
   const [ledgerEvents, setLedgerEvents] = useState<EventEnvelope[]>([]);
+  const inbox = useApprovalInbox(ledgerEvents, connected);
   useEffect(() => client.subscribeEvents((event) => {
     setLedgerEvents((current) => appendEvent(current, event));
   }, undefined, setConnected), []);
@@ -170,7 +135,9 @@ export function App() {
       <Link className="brand" to="/ledger"><span className="mark" aria-hidden="true">A</span> AgentGuard</Link>
       <p className="eyebrow nav-label">Workspace</p>
       <nav aria-label="Main navigation">{pages.map(({ path, label, icon }) =>
-        <NavLink key={path} to={path}><span aria-hidden="true">{icon}</span>{label}</NavLink>)}</nav>
+        <NavLink key={path} to={path}><span aria-hidden="true">{icon}</span>{label}
+          {path === '/approvals' && <span className="pill approval-count" aria-label={inbox.pending.length + ' pending approvals'}>{inbox.pending.length}</span>}
+        </NavLink>)}</nav>
     </aside>
     <div className="workspace">
       <div className="topbar"><span>Payment firewall</span><ConnectionStatus connected={connected} /></div>
@@ -179,7 +146,7 @@ export function App() {
           <Route index element={<Navigate replace to="/ledger" />} />
           <Route path="/mandates" element={<Mandates />} />
           <Route path="/ledger" element={<Ledger events={ledgerEvents} connected={connected} />} />
-          <Route path="/approvals" element={<Approvals />} />
+          <Route path="/approvals" element={<Approvals inbox={inbox} />} />
           <Route path="/payments/:id" element={<PaymentRoute />} />
           <Route path="/benchmark" element={<Benchmark />} />
           <Route path="*" element={<Page label="AgentGuard" title="Page not found" description="This address does not match a dashboard page."><Link to="/ledger">Open Live Ledger</Link></Page>} />

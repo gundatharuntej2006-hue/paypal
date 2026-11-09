@@ -8,6 +8,18 @@ export interface Payment extends DecisionResponse {
   ts: string;
 }
 
+export interface ApprovalPayment extends Omit<Payment, 'risk_score' | 'checks' | 'audit_event_id'> {
+  risk_score?: Payment['risk_score'];
+  checks?: Payment['checks'];
+  audit_event_id?: string;
+  items?: { name: string; qty: number; unit_price: string }[];
+  injection_rationale?: string;
+  intent_rationale?: string;
+  approval_url?: string;
+  approval_order_id?: string;
+  approval_intent?: 'authorize' | 'capture';
+}
+
 export interface BenchmarkReport {
   classes: { name: string; blocked: number; total: number }[];
   false_positive_rate: number;

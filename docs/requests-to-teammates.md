@@ -7,7 +7,7 @@ The dashboard shell defaults to the in-memory stub. Set `VITE_USE_STUB=false` an
 - `GET /v1/mandates` returns an array of mandates and `POST /v1/mandates` accepts and returns a mandate.
 - `GET /v1/payments` and `GET /v1/approvals` return arrays of payment summaries. Each summary extends the shared decision with `mandate_id`, `merchant_id`, `amount`, `currency`, and `ts`.
 - `GET /v1/payments/:id/events` returns an array of event envelopes.
-- `POST /v1/approvals/:id/approve` and `POST /v1/approvals/:id/reject` use the payment ID and return a successful HTTP status.
+- `POST /v1/payments/:id/approve` accepts an optional JSON body with `paypal_order_id`. `POST /v1/payments/:id/reject` accepts an optional JSON body with `reason`. Both return a successful HTTP status and emit the corresponding human decision event for that payment.
 - `GET /v1/events` streams event envelopes as default SSE messages. Support the optional `payment_id` query filter and allow the dashboard's origin for browser requests.
 
 ## Benchmark (Tharun and Vivek)
@@ -23,3 +23,9 @@ Expose the report via `GET /v1/benchmark` or agree on an alternate serving locat
 ## Ledger replay (Vivek)
 
 Send each event envelope in an SSE data frame with an id field equal to the envelope id. Honor the browser's Last-Event-ID header on reconnect. The ledger deduplicates replays by envelope ID and keeps the newest 5,000 events. To populate the initial live payment summaries, stream recent payment chains on first connection. Include merchant_id, amount, and currency on intent.received, the shared checks and paypal objects on decision.made, and signal rationale or factors in the corresponding check events.
+
+## Step-up checkout (Vivek)
+
+- Return only unresolved step-up payments from GET /v1/approvals. Use the decision timestamp in ts, and include items, checks, reasons, risk_score, injection_rationale and intent_rationale where available. Include payment item data on intent.received so new inbox cards can also be built from the stream.
+- For external PayPal checkout, provide an HTTPS approval_url on paypal.com. The gateway owns the buyer return or webhook confirmation, verifies PayPal's result, and emits human.approved only after verification. For SDK checkout, supply approval_order_id and approval_intent (authorize or capture, default authorize). The dashboard can also use paypal.order_id for a pending checkout. Validate the returned order against the payment before recording the review. Omit checkout fields when a plain approval POST is appropriate.
+- Treat both review actions as idempotent for the payment and reject conflicting decisions. Include a supplied rejection reason in human.rejected so it appears in the inbox and ledger.

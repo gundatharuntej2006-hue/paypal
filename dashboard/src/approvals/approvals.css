@@ -1,0 +1,18 @@
+.approval-cards { grid-template-columns: repeat(auto-fit, minmax(min(100%, 22rem), 1fr)); }
+.approval-cards article { overflow-wrap: anywhere; }
+.approval-cards h3 { font-size: .9rem; }
+.approval-cards ul, .approval-progress ul { padding-left: 1.15rem; }
+.approval-cards li, .approval-progress li { margin: .35rem 0; }
+.approval-total { margin: .35rem 0; color: var(--text); font-size: 1.25rem; font-weight: 750; }
+.approval-signals { grid-template-columns: minmax(5.5rem, auto) minmax(0, 1fr); }
+.approval-progress { margin-block: 1rem; }
+.approval-progress button { margin-left: .65rem; }
+.approval-count { margin-left: auto; }
+.review-dialog { color: var(--text); width: min(30rem, calc(100% - 2rem)); max-height: calc(100% - 2rem); }
+.review-dialog::backdrop { background: #080e20a6; }
+.review-dialog label { display: grid; gap: .35rem; margin-bottom: .75rem; }
+.review-dialog textarea {
+  width: 100%; padding: .55rem; border: 1px solid var(--border); border-radius: .5rem;
+  background: var(--background); color: var(--text); font: inherit; resize: vertical;
+}
+.review-link-button { border-radius: .5rem; padding: .55rem .9rem; background: var(--accent-bg); font-weight: 650; text-decoration: none; }

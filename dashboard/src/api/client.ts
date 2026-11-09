@@ -1,6 +1,6 @@
 import type { MandateDraft } from '../lib/mandate';
 import type { EventEnvelope, Mandate } from '../contracts/types';
-import type { BenchmarkReport, Payment } from './models';
+import type { ApprovalPayment, BenchmarkReport, Payment } from './models';
 import { stub } from './stub';
 
 export const useStub = import.meta.env.VITE_USE_STUB !== 'false';
@@ -18,8 +18,13 @@ async function request<T>(path: string, options?: RequestInit): Promise<T> {
   return response.json() as Promise<T>;
 }
 
-async function review(id: string, action: 'approve' | 'reject') {
-  const response = await fetch(gateway + '/v1/approvals/' + encodeURIComponent(id) + '/' + action, { method: 'POST' });
+async function review(id: string, action: 'approve' | 'reject', detail?: string) {
+  const body = detail ? JSON.stringify(action === 'approve' ? { paypal_order_id: detail } : { reason: detail }) : undefined;
+  const response = await fetch(gateway + '/v1/payments/' + encodeURIComponent(id) + '/' + action, {
+    method: 'POST',
+    headers: body ? { 'Content-Type': 'application/json' } : undefined,
+    body,
+  });
   if (!response.ok) throw new GatewayError(response.status);
 }
 
@@ -34,9 +39,9 @@ const live: typeof stub = {
   ),
   listPayments: () => request<Payment[]>('/payments'),
   getPaymentEvents: (id) => request<EventEnvelope[]>('/payments/' + encodeURIComponent(id) + '/events'),
-  listApprovals: () => request<Payment[]>('/approvals'),
-  approve: (id) => review(id, 'approve'),
-  reject: (id) => review(id, 'reject'),
+  listApprovals: () => request<ApprovalPayment[]>('/approvals'),
+  approve: (id, orderId) => review(id, 'approve', orderId),
+  reject: (id, reason) => review(id, 'reject', reason),
   getBenchmarkReport: () => request<BenchmarkReport>('/benchmark'),
   subscribeEvents(onEvent, paymentId, onConnection) {
     const query = paymentId ? '?' + new URLSearchParams({ payment_id: paymentId }) : '';
