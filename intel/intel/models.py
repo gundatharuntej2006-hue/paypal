@@ -21,6 +21,15 @@ class _Request(BaseModel):
     # Lenient: callers may send extra fields (for example the full signed mandate).
     model_config = ConfigDict(extra="ignore")
 
+    @model_validator(mode="before")
+    @classmethod
+    def _null_means_absent(cls, data: object) -> object:
+        # Go encodes an empty slice as null ("history": null). Treat null like a missing field so
+        # defaults apply; a required field that is null still fails as "missing".
+        if isinstance(data, dict):
+            return {key: value for key, value in data.items() if value is not None}
+        return data
+
 
 class _Response(BaseModel):
     model_config = ConfigDict(extra="forbid")
