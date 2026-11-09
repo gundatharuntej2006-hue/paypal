@@ -1,0 +1,78 @@
+{
+  "$defs": {
+    "SourceContext": {
+      "properties": {
+        "ref": {
+          "title": "Ref",
+          "type": "string"
+        },
+        "kind": {
+          "default": "text",
+          "enum": [
+            "html",
+            "text",
+            "review",
+            "email",
+            "invoice",
+            "tool_output"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Url"
+        },
+        "text": {
+          "description": "Text the agent read.",
+          "maxLength": 200000,
+          "title": "Text",
+          "type": "string"
+        },
+        "html": {
+          "anyOf": [
+            {
+              "maxLength": 1000000,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Raw HTML when available; needed to detect hidden-text tricks.",
+          "title": "Html"
+        }
+      },
+      "required": [
+        "ref",
+        "text"
+      ],
+      "title": "SourceContext",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "contexts": {
+      "items": {
+        "$ref": "#/$defs/SourceContext"
+      },
+      "maxItems": 50,
+      "title": "Contexts",
+      "type": "array"
+    }
+  },
+  "required": [
+    "contexts"
+  ],
+  "title": "ScanRequest",
+  "type": "object"
+}

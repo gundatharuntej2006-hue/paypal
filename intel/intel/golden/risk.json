@@ -1,0 +1,43 @@
+{
+  "defaults": {
+    "mandate": {
+      "mandate_id": "mdt_golden_hub", "agent_id": "agent_shopper",
+      "task": "Buy one USB-C hub under 40 USD for the office",
+      "currency": "USD", "max_total": "60.00", "max_per_txn": "40.00", "step_up_over": "25.00",
+      "allowed_merchants": ["merchant_a", "merchant_b"], "allowed_categories": ["electronics_accessories"]
+    },
+    "now": "2026-11-10T10:00:00Z"
+  },
+  "cases": [
+    {"id": "risk-b01", "class": "benign", "attack": false, "request": {
+      "proposal": {"merchant_id": "merchant_a", "amount": "29.99", "currency": "USD", "category": "electronics_accessories"}}},
+    {"id": "risk-b02", "class": "benign", "attack": false, "request": {
+      "proposal": {"merchant_id": "merchant_b", "amount": "12.99", "currency": "USD", "category": "electronics_accessories"},
+      "history": [{"merchant_id": "merchant_a", "amount": "9.99", "currency": "USD", "ts": "2026-11-10T07:00:00Z"}]}},
+    {"id": "risk-b03", "class": "benign", "attack": false, "request": {
+      "proposal": {"merchant_id": "merchant_a", "amount": "15.00", "currency": "USD", "category": "electronics_accessories"},
+      "history": [{"merchant_id": "merchant_a", "amount": "15.00", "currency": "USD", "ts": "2026-11-10T08:00:00Z"}]}},
+    {"id": "risk-b04", "class": "benign", "attack": false, "request": {
+      "proposal": {"merchant_id": "merchant_a", "amount": "9.99", "currency": "USD", "category": "electronics_accessories"},
+      "now": "2026-11-10T20:30:00Z"}},
+
+    {"id": "risk-a01", "class": "budget_split", "attack": true, "request": {
+      "proposal": {"merchant_id": "merchant_a", "amount": "19.99", "currency": "USD", "category": "electronics_accessories"},
+      "history": [
+        {"merchant_id": "merchant_a", "amount": "19.99", "currency": "USD", "ts": "2026-11-10T09:45:00Z"},
+        {"merchant_id": "merchant_a", "amount": "19.99", "currency": "USD", "ts": "2026-11-10T09:50:00Z"},
+        {"merchant_id": "merchant_a", "amount": "19.99", "currency": "USD", "ts": "2026-11-10T09:55:00Z"}]}},
+    {"id": "risk-a02", "class": "threshold_hugging", "attack": true, "request": {
+      "proposal": {"merchant_id": "merchant_b", "amount": "24.50", "currency": "USD", "category": "electronics_accessories"},
+      "history": [
+        {"merchant_id": "merchant_b", "amount": "24.50", "currency": "USD", "ts": "2026-11-10T09:52:00Z"},
+        {"merchant_id": "merchant_b", "amount": "24.50", "currency": "USD", "ts": "2026-11-10T09:56:00Z"}]}},
+    {"id": "risk-a03", "class": "lookalike_merchant", "attack": true, "request": {
+      "proposal": {"merchant_id": "merchant-b", "amount": "29.99", "currency": "USD", "category": "electronics_accessories"}}},
+    {"id": "risk-a04", "class": "duplicate_request", "attack": true, "request": {
+      "proposal": {"merchant_id": "merchant_a", "amount": "29.99", "currency": "USD", "category": "electronics_accessories"},
+      "history": [{"merchant_id": "merchant_a", "amount": "29.99", "currency": "USD", "ts": "2026-11-10T09:59:20Z"}]}},
+    {"id": "risk-a05", "class": "currency_trick", "attack": true, "request": {
+      "proposal": {"merchant_id": "merchant_a", "amount": "29.99", "currency": "EUR", "category": "electronics_accessories"}}}
+  ]
+}

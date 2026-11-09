@@ -1,0 +1,97 @@
+{
+  "$defs": {
+    "Snippet": {
+      "additionalProperties": false,
+      "properties": {
+        "ref": {
+          "title": "Ref",
+          "type": "string"
+        },
+        "text": {
+          "maxLength": 500,
+          "title": "Text",
+          "type": "string"
+        },
+        "rule": {
+          "description": "Which rule or classifier flagged it.",
+          "title": "Rule",
+          "type": "string"
+        }
+      },
+      "required": [
+        "ref",
+        "text",
+        "rule"
+      ],
+      "title": "Snippet",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "version": {
+      "description": "Engine and prompt version that produced this result, e.g. 'stub' or 'scan_v1'.",
+      "title": "Version",
+      "type": "string"
+    },
+    "latency_ms": {
+      "default": 0,
+      "minimum": 0,
+      "title": "Latency Ms",
+      "type": "integer"
+    },
+    "reason": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Why the result is unknown (e.g. 'timeout', 'no_llm_key'). Null otherwise.",
+      "title": "Reason"
+    },
+    "verdict": {
+      "enum": [
+        "clean",
+        "injection",
+        "unknown"
+      ],
+      "title": "Verdict",
+      "type": "string"
+    },
+    "confidence": {
+      "maximum": 1.0,
+      "minimum": 0.0,
+      "title": "Confidence",
+      "type": "number"
+    },
+    "snippets": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/Snippet"
+      },
+      "title": "Snippets",
+      "type": "array"
+    },
+    "stage": {
+      "enum": [
+        "heuristic",
+        "llm",
+        "none"
+      ],
+      "title": "Stage",
+      "type": "string"
+    }
+  },
+  "required": [
+    "version",
+    "verdict",
+    "confidence",
+    "stage"
+  ],
+  "title": "ScanResponse",
+  "type": "object"
+}

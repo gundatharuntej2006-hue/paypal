@@ -1,0 +1,324 @@
+{
+  "$defs": {
+    "Item": {
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "qty": {
+          "minimum": 1,
+          "title": "Qty",
+          "type": "integer"
+        },
+        "unit_price": {
+          "examples": [
+            "29.99"
+          ],
+          "pattern": "^\\d+(\\.\\d{1,2})?$",
+          "title": "Unit Price",
+          "type": "string"
+        },
+        "category": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Category"
+        }
+      },
+      "required": [
+        "name",
+        "qty",
+        "unit_price"
+      ],
+      "title": "Item",
+      "type": "object"
+    },
+    "Mandate": {
+      "properties": {
+        "mandate_id": {
+          "title": "Mandate Id",
+          "type": "string"
+        },
+        "agent_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Agent Id"
+        },
+        "task": {
+          "title": "Task",
+          "type": "string"
+        },
+        "currency": {
+          "examples": [
+            "USD"
+          ],
+          "pattern": "^[A-Z]{3}$",
+          "title": "Currency",
+          "type": "string"
+        },
+        "max_total": {
+          "examples": [
+            "29.99"
+          ],
+          "pattern": "^\\d+(\\.\\d{1,2})?$",
+          "title": "Max Total",
+          "type": "string"
+        },
+        "max_per_txn": {
+          "examples": [
+            "29.99"
+          ],
+          "pattern": "^\\d+(\\.\\d{1,2})?$",
+          "title": "Max Per Txn",
+          "type": "string"
+        },
+        "step_up_over": {
+          "anyOf": [
+            {
+              "examples": [
+                "29.99"
+              ],
+              "pattern": "^\\d+(\\.\\d{1,2})?$",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Step Up Over"
+        },
+        "allowed_merchants": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Allowed Merchants",
+          "type": "array"
+        },
+        "allowed_categories": {
+          "default": [],
+          "items": {
+            "type": "string"
+          },
+          "title": "Allowed Categories",
+          "type": "array"
+        },
+        "valid_from": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Valid From"
+        },
+        "expires_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expires At"
+        }
+      },
+      "required": [
+        "mandate_id",
+        "task",
+        "currency",
+        "max_total",
+        "max_per_txn"
+      ],
+      "title": "Mandate",
+      "type": "object"
+    },
+    "Proposal": {
+      "properties": {
+        "merchant_id": {
+          "title": "Merchant Id",
+          "type": "string"
+        },
+        "merchant_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Merchant Name"
+        },
+        "amount": {
+          "examples": [
+            "29.99"
+          ],
+          "pattern": "^\\d+(\\.\\d{1,2})?$",
+          "title": "Amount",
+          "type": "string"
+        },
+        "currency": {
+          "examples": [
+            "USD"
+          ],
+          "pattern": "^[A-Z]{3}$",
+          "title": "Currency",
+          "type": "string"
+        },
+        "category": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Category the agent declares for this purchase.",
+          "title": "Category"
+        },
+        "items": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Item"
+          },
+          "title": "Items",
+          "type": "array"
+        }
+      },
+      "required": [
+        "merchant_id",
+        "amount",
+        "currency"
+      ],
+      "title": "Proposal",
+      "type": "object"
+    },
+    "SourceContext": {
+      "properties": {
+        "ref": {
+          "title": "Ref",
+          "type": "string"
+        },
+        "kind": {
+          "default": "text",
+          "enum": [
+            "html",
+            "text",
+            "review",
+            "email",
+            "invoice",
+            "tool_output"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Url"
+        },
+        "text": {
+          "description": "Text the agent read.",
+          "maxLength": 200000,
+          "title": "Text",
+          "type": "string"
+        },
+        "html": {
+          "anyOf": [
+            {
+              "maxLength": 1000000,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Raw HTML when available; needed to detect hidden-text tricks.",
+          "title": "Html"
+        }
+      },
+      "required": [
+        "ref",
+        "text"
+      ],
+      "title": "SourceContext",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "task": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Defaults to mandate.task.",
+      "title": "Task"
+    },
+    "mandate": {
+      "$ref": "#/$defs/Mandate"
+    },
+    "proposal": {
+      "$ref": "#/$defs/Proposal"
+    },
+    "reasoning": {
+      "maxLength": 50000,
+      "title": "Reasoning",
+      "type": "string"
+    },
+    "source_contexts": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/SourceContext"
+      },
+      "maxItems": 50,
+      "title": "Source Contexts",
+      "type": "array"
+    }
+  },
+  "required": [
+    "mandate",
+    "proposal",
+    "reasoning"
+  ],
+  "title": "JudgeRequest",
+  "type": "object"
+}
