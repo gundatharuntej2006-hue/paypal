@@ -6,15 +6,21 @@ import { stub } from './stub';
 export const useStub = import.meta.env.VITE_USE_STUB !== 'false';
 const gateway = (import.meta.env.VITE_GATEWAY_URL || 'http://localhost:8080').replace(/\/+$/, '');
 
+export class GatewayError extends Error {
+  constructor(readonly status: number) {
+    super('Gateway returned HTTP ' + status + '.');
+  }
+}
+
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(gateway + '/v1' + path, options);
-  if (!response.ok) throw new Error('Gateway returned HTTP ' + response.status + '.');
+  if (!response.ok) throw new GatewayError(response.status);
   return response.json() as Promise<T>;
 }
 
 async function review(id: string, action: 'approve' | 'reject') {
   const response = await fetch(gateway + '/v1/approvals/' + encodeURIComponent(id) + '/' + action, { method: 'POST' });
-  if (!response.ok) throw new Error('Gateway returned HTTP ' + response.status + '.');
+  if (!response.ok) throw new GatewayError(response.status);
 }
 
 const live: typeof stub = {

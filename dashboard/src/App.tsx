@@ -1,9 +1,10 @@
+import { PaymentRoute } from './payments/PaymentDetail';
 import { Ledger } from './ledger/Ledger';
 import { appendEvent, decisionLabels } from './ledger/rows';
 import { CopyButton, MandateBuilder } from './mandates/MandateBuilder';
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
-import { Link, NavLink, Navigate, Route, Routes, useParams } from 'react-router-dom';
+import { Link, NavLink, Navigate, Route, Routes } from 'react-router-dom';
 import { client, useStub } from './api/client';
 import type { Payment } from './api/models';
 import type { Decision, EventEnvelope } from './contracts/types';
@@ -133,32 +134,6 @@ function Approvals() {
       </article>)}</div>}
     </DataView>
   </Page>;
-}
-
-function PaymentDetail({ id }: { id: string }) {
-  const [events, setEvents] = useState<EventEnvelope[]>([]);
-  const [load] = useState(() => () => client.getPaymentEvents(id));
-  const state = useData(load);
-  useEffect(() => client.subscribeEvents((event) => {
-    setEvents((current) => current.some((item) => item.id === event.id) ? current : [...current, event]);
-  }, id), [id]);
-  return <Page label="Audit trail" title="Payment Detail" description={'Recorded checks and PayPal activity for ' + id + '.'}>
-    <Link className="back" to="/ledger">← Back to Live Ledger</Link>
-    <DataView state={state} empty="No events found for this payment.">{(history) => {
-      const timeline = [...new Map([...history, ...events].map((event) => [event.id, event])).values()]
-        .sort((first, second) => Date.parse(first.ts) - Date.parse(second.ts));
-      return timeline.length > 0 && <ol className="timeline">{timeline.map((event) => <li className="panel card" key={event.id}>
-        <div className="event-heading"><h2>{event.type}</h2><time dateTime={event.ts}>{date(event.ts)}</time></div>
-        <p>{event.id} · {event.mandate_id}</p>
-        <details><summary>Event payload</summary><pre>{JSON.stringify(event.payload, null, 2)}</pre></details>
-      </li>)}</ol>;
-    }}</DataView>
-  </Page>;
-}
-
-function PaymentRoute() {
-  const { id = '' } = useParams();
-  return <PaymentDetail key={id} id={id} />;
 }
 
 function Benchmark() {
