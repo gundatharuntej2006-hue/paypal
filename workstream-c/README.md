@@ -3,16 +3,17 @@
 Owner: Tharun. This directory contains the isolated Python package for agents,
 attacks, and benchmarking. The mock merchant application and internal source
 evidence helper, 15 poisoned page fixtures, and a LangGraph shopping workflow are
-implemented. Payment integration, the full malicious/benign scenario library,
-and benchmark implementation remain pending. The shopping model is a deterministic
-demo, not an LLM.
+implemented. The Gateway SDK is implemented with payment submission disabled by
+default and fake-transport validation only. Actual gateway/payment integration,
+the full malicious/benign scenario library, and benchmark implementation remain
+pending. The shopping model is a deterministic demo, not an LLM.
 
 ## Modules
 
 | Path | Responsibility |
 | --- | --- |
 | `src/agentguard_workstream_c/` | Package namespace for Workstream C. |
-| `sdk/` | Future Python Gateway SDK, including `guard.request_payment(...)`, communicating with Vivek's real Go gateway. |
+| `sdk/` | Typed Gateway SDK, opt-in one-shot transport, offline proposal mapping, and fake-only tests. Network submission is disabled by default. |
 | `merchants/` | Standard-library mock merchant server, catalogs, HTML rendering, internal source evidence, and a fixture-scoped visible-text reader. |
 | `agent/` | Eight-node LangGraph shopping workflow ending at an internal purchase proposal. No payment submission. |
 | `attacks/` | Fifteen declarative poisoned merchant variants; the full 60-malicious/20-benign scenario library remains future work. |
@@ -25,9 +26,9 @@ demo, not an LLM.
 
 - Vivek owns the Go payment gateway; Atul owns the intelligence service.
 - Rikita owns the React dashboard.
-- The team will supply shared API contracts through the repository's `contracts/`
-  directory. No contracts, request schemas, or response schemas are defined here.
-- The SDK must follow those contracts and communicate with the real gateway.
+- The team's shared API contracts are published through `contracts/` on remote
+  teammate branches. SDK bindings follow the inspected Go contract; this directory
+  does not define or replace the authoritative shared schemas.
 - Every shopping-agent payment request must go through the SDK. The agent must
   never receive, load, or access PayPal credentials.
 - Keep Workstream C implementation and tests inside this directory.
@@ -386,6 +387,162 @@ They cover graph transitions, both content modes, all 15 attacks, metadata,
 proposals, original-task retention, citations, count/size bounds, malformed
 responses, timeouts, redirects, URL restrictions, and absence of nonmerchant
 network calls. Existing merchant and evidence regressions remain enabled.
+
+## Python Gateway SDK (offline validated, submission disabled)
+
+The SDK follows `contracts/mandate.schema.json`, `payment_intent.schema.json`,
+`decision.schema.json` and `gateway/pkg/models/models.go` inspected on
+`origin/vivek` at `248201b1578c6c98496afecd984e1cb9f5b36a62`.
+It uses the Python standard library and adds no dependencies. It does not import
+LangGraph, implement a signer, or create an intelligence/PayPal client.
+
+| SDK module | Responsibility |
+| --- | --- |
+| `models.py` | Validated PaymentItem/PaymentIntent, immutable mandate snapshot, typed DecisionResponse/Checks/PayPalDetails |
+| `client.py` | GuardClient, explicit submission gate, JSON serialization, HTTP/decision error handling |
+| `transport.py` | Injectable Transport protocol and one-shot UrllibTransport; bounded responses, timeout, no proxies/redirects |
+| `exceptions.py` | Local validation/gating errors and remote HTTP/connection/timeout/protocol errors |
+| `boundary.py` | Offline `intent_from_proposal` mapping, never payment execution |
+
+### Prepare an intent without submitting
+
+The following uses a completed agent state and a signed mandate issued externally.
+It does not add a payment node or change the shopping graph:
+
+```python
+from uuid import uuid4
+from agentguard_workstream_c.sdk import GuardClient, intent_from_proposal
+
+# state: completed shopping workflow; signed_mandate: externally supplied JSON object.
+logical_intent_key = str(uuid4())  # Generate ONCE and persist for this logical intent.
+intent = intent_from_proposal(
+    state["purchase_proposal"],
+    mandate=signed_mandate,
+    reasoning_summary=state["reasoning_summary"],
+    source_contexts=state["source_contexts"],
+    idempotency_key=logical_intent_key,
+)
+guard = GuardClient(base_url="http://127.0.0.1:8080")
+# guard.request_payment(intent) raises SubmissionDisabledError locally; zero requests.
+```
+
+`request_payment` accepts either a PaymentIntent or its keyword fields:
+
+```python
+from agentguard_workstream_c.sdk import PaymentItem
+
+# This client remains disabled. Calling it fails locally, before transport access.
+# The keyword form, for a future reviewed caller, is:
+# guard.request_payment(
+#     mandate=signed_mandate, merchant_id="merchant_a", amount="29.99", currency="USD",
+#     items=(PaymentItem("USB-C hub", 1, "29.99"),),
+#     agent_reasoning="Selected an offer matching the task.",
+#     idempotency_key=logical_intent_key,
+# )
+```
+
+Constructor parameters are `base_url`, `payment_submission_enabled=False`,
+`timeout=10.0`, `max_response_bytes=1_000_000`, and optional `transport`.
+The only opt-in is explicit `payment_submission_enabled=True`; the SDK does not
+claim that setting this flag establishes a safe gateway. When enabled with the
+default transport, the request can authorize and capture money. Actual network
+submission has not been tested or approved in this implementation task.
+Tests use that opt-in only with injected fakes, never with actual payment transport.
+
+### Wire contract and preservation
+
+The one endpoint is `POST /v1/payments/intents`. The body is flat:
+
+- Required: `mandate`, `merchant_id`, `amount`, `currency`, `items`,
+  `agent_reasoning`, `idempotency_key`.
+- Optional: `merchant_name`, `category`, `source_contexts`.
+- Items require `name`, integer `qty >= 1`, and `unit_price`; optional `category`.
+- SourceContexts retain their existing `ref`, `text`, `kind`, URL and HTML.
+  Optional values that are None are omitted rather than emitted as null.
+
+The signed mandate is structurally validated, snapshotted, and serialized with
+all supplied JSON values intact, including signature, public key, timestamp
+spelling, allowlist order, optional nulls, and extension fields. Caller mutation
+after intent construction cannot change that snapshot. The SDK does not add
+defaults, sort mandate arrays, normalize timestamps, sign, or cryptographically
+verify a mandate. It rejects non-JSON extension values rather than silently
+coercing them. Timestamps must be timezone-aware RFC3339; leap-second timestamps
+are not supported by the local datetime validator. Actual mandate authorization
+and signer trust remain gateway responsibilities.
+
+Money accepts strings or Decimal and serializes as strings matching
+`^[0-9]+(\.[0-9]{1,2})?$`. Floats, NaN, infinity, signs, exponent-form strings,
+and excess fractional precision are rejected. Decimal values use fixed-point
+formatting; there is no rounding or silent quantization. Existing money-string
+spelling is retained. Zero is schema-valid, though the current gateway verifier
+rejects a zero requested amount. Currency must match `^[A-Z]{3}$` exactly.
+The SDK does not infer conversions or recalculate a caller's signed mandate.
+
+The external caller supplies a hyphenated UUID idempotency key. Its exact spelling
+is retained, including case; the SDK never generates or rotates it. The offline
+proposal adapter maps product name/quantity/unit price into an item. It does not
+invent top-level `product_id` or `source_references` fields in the gateway request.
+All supplied evidence is retained, including evidence beyond selected citations.
+The existing context count and text/HTML limits still apply on the client side;
+these limits are stricter than the gateway's currently unenforced schema limits.
+
+DecisionResponse exposes `payment_id`, `decision`, Decimal `risk_score`,
+`reasons`, typed `checks`, optional `paypal`, optional `step_up_token`, and
+`audit_event_id`. Decisions are exactly `allow`, `step_up`, or `block`.
+Checks validate mandate `pass|fail` and injection/intent/risk
+`pass|flagged|unknown`. Approval URLs and available PayPal IDs are retained;
+`refund_id` is supported because it is also in the Go struct. Unknown response
+extension properties are ignored. A 200 `block` is a valid response. An `allow`
+decision or an approval URL is not interpreted as proof of completed capture.
+
+### Errors and idempotency limitations
+
+- `ValidationError`: malformed local request; no submission attempted.
+- `SubmissionDisabledError`: submission gate closed; no HTTP request.
+- `GatewayHTTPError`: status in `.status_code`, bounded plain-text diagnostic
+  in `.body_text`; its string representation does not dump the server body.
+- `IdempotencyConflictError`: HTTP 409; no original decision is available.
+- `GatewayConnectionError` / `GatewayTimeoutError`: execution outcome unknown.
+- `InvalidResponseError`: invalid UTF-8/JSON, duplicate JSON keys, missing/invalid
+  decision structure, nonfinite numbers, or incomplete response.
+- `ResponseTooLargeError`: response exceeds configured byte bound.
+- `RedirectRefusedError`: payment POST redirect not followed.
+
+Remote/transport errors expose the unchanged `.idempotency_key` and conservatively
+mark `.outcome_unknown=True`. Raw HTTP diagnostics may be sensitive and are not
+automatically logged. The SDK sends only JSON Content-Type and Accept headers;
+it has no authentication or custom credential-header parameters. It never reads
+PayPal, provider, or intelligence credentials from the environment.
+
+There are **no automatic retries**, including on 409, timeout, 500 or 502. A timeout
+or malformed response may follow partial or completed payment execution. The
+gateway currently returns a plain-text 409 for duplicates rather than replaying
+the original response. Do not rotate the key to work around a conflict, assume
+that an exception means no payment occurred, or infer that a 409 proves success.
+Result recovery/reconciliation must be defined by Vivek before live integration.
+
+Other unresolved gateway issues include caller and principal-key authentication,
+step-up token verification, payer approval/capture correctness, mandate-scoped
+risk history, intelligence response validation, body-size enforcement, durable
+idempotent result recovery, and ledger projection consistency. These are not
+repaired or bypassed by SDK client validation. Keep the shopping graph offline
+from payment submission until that integration is separately reviewed.
+
+### SDK tests
+
+```powershell
+.\.venv\Scripts\python.exe -m pytest tests/test_gateway_sdk.py -v
+.\.venv\Scripts\python.exe -m pytest -q
+.\.venv\Scripts\python.exe -m pip check
+```
+
+SDK tests use injected fake responses/openers only, with a socket guard that
+fails on any connection attempt. They cover serialization, mandate/HTML fidelity,
+null omission, money/currency/items, all decisions, error status bodies, timeouts,
+redirects, response validation/bounds, local gating, exact UUID retention and
+one-shot behavior. Full regressions separately use the existing ephemeral local
+merchant servers; no test calls the Go gateway or PayPal. Real gateway integration
+has not been verified.
 
 ## Windows sandbox editable-install workaround
 
