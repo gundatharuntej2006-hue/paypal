@@ -2,8 +2,10 @@
 
 Owner: Tharun. This directory contains the isolated Python package for agents,
 attacks, and benchmarking. The mock merchant application and internal source
-evidence helper and 15 poisoned page fixtures are implemented. Payment, agent,
-the full malicious/benign scenario library, and benchmark implementation remain pending.
+evidence helper, 15 poisoned page fixtures, and a LangGraph shopping workflow are
+implemented. Payment integration, the full malicious/benign scenario library,
+and benchmark implementation remain pending. The shopping model is a deterministic
+demo, not an LLM.
 
 ## Modules
 
@@ -12,7 +14,7 @@ the full malicious/benign scenario library, and benchmark implementation remain 
 | `src/agentguard_workstream_c/` | Package namespace for Workstream C. |
 | `sdk/` | Future Python Gateway SDK, including `guard.request_payment(...)`, communicating with Vivek's real Go gateway. |
 | `merchants/` | Standard-library mock merchant server, catalogs, HTML rendering, internal source evidence, and a fixture-scoped visible-text reader. |
-| `agent/` | Future LangGraph shopping workflow, calling the SDK for every payment request. |
+| `agent/` | Eight-node LangGraph shopping workflow ending at an internal purchase proposal. No payment submission. |
 | `attacks/` | Fifteen declarative poisoned merchant variants; the full 60-malicious/20-benign scenario library remains future work. |
 | `benchmark/` | Future scenario runner and JSON/Markdown reporting. |
 | `tests/test_package_imports.py` | Import checks for the root package and each subpackage. |
@@ -33,17 +35,16 @@ the full malicious/benign scenario library, and benchmark implementation remain 
 ## Python and development
 
 This scaffold declares Python 3.11 or newer and uses setuptools with a `src/`
-layout. There are no runtime dependencies. The optional `dev` extra declares
-pytest. The Python baseline should be confirmed with the team before integration.
+layout. There are no mandatory runtime dependencies. The optional `dev` extra
+declares pytest; the `agent` extra declares `langgraph>=1.2.20,<2.0`.
 
 When dependency installation is authorized, development setup from this directory
 can use `python -m pip install -e ".[dev]"`. No installation is required for import
 tests if pytest is already available: run `python -m pytest` from this directory.
 The pytest configuration adds `src/` to the import path.
 
-The separate `agent/` package provides a location for future LangGraph graph,
-state, and tool modules. LangGraph and model-provider dependencies are deferred
-until implementation is authorized and compatible versions are selected.
+The `agent/` package uses LangGraph with a provider-neutral model interface.
+Provider-specific integrations remain deferred; none are installed by our extras.
 The merchant application operates independently of other packages and external services.
 
 ## Mock merchant application
@@ -231,6 +232,160 @@ all 15 variants through a real loopback HTTP server, check raw/visible payloads,
 placement, identity, source preservation, and missing IDs. Clean-page SHA-256
 regressions cover all eight original products, and existing tests remain active.
 This work does not define a gateway request or contact the intelligence service.
+
+## LangGraph shopping workflow
+
+Install into the existing virtual environment from `workstream-c/`. On Windows,
+use the local temporary directory workaround and tested constraints:
+
+```powershell
+New-Item -ItemType Directory -Path .venv\tmp -Force | Out-Null
+$previousTemp = $env:TEMP
+$previousTmp = $env:TMP
+try {
+    $env:TEMP = (Resolve-Path .venv\tmp).Path
+    $env:TMP = $env:TEMP
+    .\.venv\Scripts\python.exe -m pip install -e ".[agent,dev]" -c constraints-agent-windows.txt
+    if ($LASTEXITCODE -ne 0) { throw "Agent installation failed." }
+} finally {
+    $env:TEMP = $previousTemp
+    $env:TMP = $previousTmp
+}
+.\.venv\Scripts\python.exe -m pip check
+.\.venv\Scripts\python.exe -m pytest -v
+```
+
+Validated with Python 3.12.14, LangGraph 1.2.20, LangChain Core 1.7.6, and pytest
+9.2.0. LangGraph brings transitive infrastructure dependencies, including
+LangChain Core, Pydantic, and LangSmith; no paid model integration is included.
+The initial `uuid-utils` 0.19.0 native wheel was blocked by Windows Application
+Control in this environment, preventing graph imports and pytest startup.
+The compatible 0.12.0 wheel loads successfully. `constraints-agent-windows.txt`
+records that version and LangGraph 1.2.20 without adding another dependency.
+No plugins or failing tests were disabled. The constraints file is not a complete
+dependency lock; dependency resolution may differ on another platform.
+
+Architecture under `src/agentguard_workstream_c/agent/`:
+
+| Module | Responsibility |
+| --- | --- |
+| `state.py` | Immutable config/evidence/candidate/selection/proposal records and typed graph state |
+| `merchant_client.py` | Bounded same-origin loopback HTTP browsing and explicit attack substitution |
+| `content.py` | Parse the existing HTML metadata, description paragraphs and review list; construct exact consumed-content evidence |
+| `model.py` | `ShoppingModel` protocol, immutable `ModelRequest`, small task parser, Decimal arithmetic and deterministic demo |
+| `nodes.py` | Eight node implementations |
+| `graph.py` | Explicit StateGraph, conditional error termination, `build_graph` and `run_shopping` |
+| `trace.py` | Concise decision summary and validated source citations |
+| `cli.py` | Local demo execution and compact JSON output |
+
+Graph order:
+
+```text
+understand_task -> discover_merchants -> retrieve_products -> read_product_content
+ -> compare_products -> select_product -> record_decision_trace
+ -> prepare_purchase_proposal -> END
+```
+
+Each intermediate node routes to END on an execution error. No merchants, no
+products, no matching products, invalid selection/citations, traversal failures,
+and evidence limits produce explicit errors and no proposal. Previously fetched
+pages are retained if retrieval later fails. Model exceptions return a safe error
+without echoing provider exception text. There are no graph retry loops or
+payment side effects.
+
+Graph state retains the unchanged original task, derived task constraints,
+merchant/product candidates, captured pages, SourceContexts, exact model page
+inputs, reader mode, concise reasoning summary, selected merchant/product,
+internal proposal, cited references, and execution errors. Node updates use fresh
+collections. The model receives frozen records and tuples rather than writable
+graph state or transport capabilities. Selection must identify a retrieved
+merchant/product pair and cite existing evidence including its selected page.
+
+HTTP discovery follows the existing listing/catalog links. Default bounds are
+10 merchants, 20 total products, 4,000,000 bytes per response, and a 3-second
+socket timeout. Exceeding a bound fails rather than silently returning a partial
+successful proposal. HTTP is limited to loopback literal IPs or `localhost`
+(pinned to `127.0.0.1`), one configured origin, and known merchant routes. Proxy
+environment variables are ignored. All redirects are rejected. External,
+unconfigured query, and nonmerchant links are never fetched. HTML must be
+complete UTF-8 with matching metadata/path identity; that consistency check does
+not authenticate a merchant. The parser targets our static markup, not arbitrary
+websites. No browser, JavaScript, or arbitrary fetch tool is exposed to the model.
+
+### Run the deterministic demo
+
+First start merchants in a separate terminal using the merchant command above.
+Then, from `workstream-c/`:
+
+```powershell
+.\.venv\Scripts\python.exe -m agentguard_workstream_c.agent.cli --task "Buy a USB-C hub under 40 USD" --reader-mode visible_text
+.\.venv\Scripts\python.exe -m agentguard_workstream_c.agent.cli --task "Buy a USB-C hub under 40 USD" --reader-mode raw_html --attack-id poison_01
+```
+
+Use `--base-url http://127.0.0.1:PORT` for a different loopback server port.
+The CLI reports model identity, reader mode, selected merchant/product,
+quantity, Decimal amount/currency, decision summary, consumed source references
+and URLs, and errors. It never dumps raw HTML and always reports
+`payment_submitted: false`. It exits nonzero on failure or no selection.
+
+The demo model supports literal product-name/category keywords, numeric quantity
+after buy/purchase/order (otherwise one), and budgets expressed as under/below,
+at most/up to, or budget followed by an amount. Under/below is exclusive. Explicit
+USD/EUR/GBP/INR or `$` specifies a currency; multiple currencies are unsupported.
+This is a small deterministic parser, not general natural-language understanding.
+The demo selects the cheapest matching retrieved offer in the requested currency.
+There is no merchant allowlist yet: the example task selects the independent
+`merchant_lookalike` hub at 27.99 USD. That is not an authorization decision.
+Money is parsed and calculated using Decimal, never float.
+
+### Reader modes and evidence
+
+- `visible_text`: every captured page is processed by the existing fixture reader;
+  its exact output is supplied to the model. Supported hidden payloads do not
+  reach that content view. Original HTML remains intact in evidence.
+- `raw_html`: complete original HTML is passed unchanged as page content,
+  including comments and hidden payloads. Both `SourceContext.text` and `.html`
+  contain that original HTML. Nothing is sanitized before the model interface.
+
+Listing, catalog, and product pages are retained and supplied as evidence: the
+default run captures 13 pages (1 listing, 4 catalogs, 8 products). Source refs are
+content-stable for the same URL/mode/content; different content/views can produce
+different refs. Collection size and per-field limits are validated before model
+invocation. In raw mode the 200,000-character text limit is also a limit on HTML
+that can be consumed, even though the separate HTML field permits 1,000,000.
+Oversized evidence is explicitly rejected, never truncated.
+
+`AgentConfig(attack_id="poison_01", reader_mode="raw_html")` applies only that
+fixture's poisoned_path to its discovered target; all other products remain
+clean. Unknown IDs fail before browsing; an undiscovered target fails explicitly.
+All 15 fixtures are tested in both modes. The deterministic model receives the
+different views but makes its keyword/price decision without interpreting their
+instructions. These runs measure plumbing and exposure, not LLM susceptibility.
+
+### Provider and payment boundaries
+
+Inject an adapter through `build_graph(config, model)` or
+`run_shopping(task, config, model)`. Implement `ShoppingModel.select(ModelRequest)`
+returning a validated `Selection` or None. Inputs include the original task,
+constraints, candidates, exact consumed pages, and references. Return only a
+short decision summary and citations; never request or persist private
+chain-of-thought. There is no provider integration, key lookup, or paid call.
+Use a separate, explicitly opted-in experiment for future live models.
+
+This is an experimental shopping baseline, not an injection scanner or an
+AgentGuard-protected agent. An injected model's structurally valid but unsafe
+proposal is not itself a payment authorization. The internal PurchaseProposal
+is not Vivek's payment-intent schema. The graph stops there. Only the future
+Gateway SDK may submit payments, and only the Go gateway calls intelligence.
+No PayPal or intelligence endpoints or internal tokens are used here. Run the
+agent process without PayPal credentials and keep future provider secrets out
+of state, prompts, evidence, and logs.
+
+Agent tests use deterministic doubles and actual ephemeral loopback servers.
+They cover graph transitions, both content modes, all 15 attacks, metadata,
+proposals, original-task retention, citations, count/size bounds, malformed
+responses, timeouts, redirects, URL restrictions, and absence of nonmerchant
+network calls. Existing merchant and evidence regressions remain enabled.
 
 ## Windows sandbox editable-install workaround
 

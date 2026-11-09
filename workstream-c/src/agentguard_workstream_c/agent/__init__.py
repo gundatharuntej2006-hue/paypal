@@ -1,1 +1,1 @@
-"""Future LangGraph shopping agent; payments use the SDK, with no PayPal credentials."""
+"""Shopping workflow with optional LangGraph orchestration and no payment execution."""
