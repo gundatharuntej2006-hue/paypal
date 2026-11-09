@@ -1,1 +1,1 @@
-"""Future mock merchant application and controlled prompt-injection content fixtures."""
+"""Local mock merchant catalogs, HTML pages, and source evidence utilities."""
