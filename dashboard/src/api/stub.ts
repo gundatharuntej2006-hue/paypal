@@ -1,3 +1,4 @@
+import type { MandateDraft } from '../lib/mandate';
 import type { Decision, EventEnvelope, EventType, Mandate } from '../contracts/types';
 import type { BenchmarkReport, Payment } from './models';
 
@@ -102,6 +103,9 @@ export const stub = {
     if (mandates.some((item) => item.mandate_id === mandate.mandate_id)) throw new Error('Mandate already exists.');
     mandates.push(mandate);
     return mandate;
+  },
+  async createMandateOrder(draft: MandateDraft) {
+    return { id: 'DEMO-ORDER-' + draft.mandate_id };
   },
   async listPayments() { return [...payments].reverse(); },
   async getPaymentEvents(id: string) { return events.filter((event) => event.payment_id === id); },

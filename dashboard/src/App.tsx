@@ -1,3 +1,4 @@
+import { CopyButton, MandateBuilder } from './mandates/MandateBuilder';
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Link, NavLink, Navigate, Route, Routes, useParams } from 'react-router-dom';
@@ -72,17 +73,30 @@ function ConnectionStatus({ connected }: { connected: boolean }) {
 
 function Mandates() {
   const state = useData(client.listMandates);
-  return <Page label="Policy" title="Mandates" description="Review spending authority, limits, and expiry for each agent.">
+  const now = Date.now();
+  return <Page label="Policy" title="Mandates" description="Define spending authority and review signed mandates.">
+    <MandateBuilder onSaved={state.retry} />
+    <h2 className="saved-mandates">Saved mandates</h2>
     <DataView state={state} empty="No mandates have been created.">{(mandates) => mandates.length > 0 &&
-      <div className="cards">{mandates.map((mandate) => <article className="panel card" key={mandate.mandate_id}>
-        <p className="eyebrow">{mandate.mandate_id}</p><h2>{mandate.task}</h2>
-        <dl>
-          <dt>Agent</dt><dd>{mandate.agent_id}</dd>
-          <dt>Total cap</dt><dd>{amount(mandate.max_total, mandate.currency)}</dd>
-          <dt>Per purchase</dt><dd>{amount(mandate.max_per_txn, mandate.currency)}</dd>
-          <dt>Expires</dt><dd>{date(mandate.expires_at)}</dd>
-        </dl>
-      </article>)}</div>}
+      <div className="cards">{mandates.map((mandate) => {
+        const status = Date.parse(mandate.expires_at) <= now ? 'Expired' :
+          Date.parse(mandate.valid_from) > now ? 'Scheduled' : 'Active';
+        const json = JSON.stringify(mandate, null, 2);
+        return <article className="panel card" key={mandate.mandate_id}>
+          <div className="actions"><p className="eyebrow">{mandate.mandate_id}</p>
+            <span className={'pill ' + (status === 'Active' ? 'allow' : status === 'Expired' ? 'block' : 'step_up')}>{status}</span>
+          </div>
+          <h2>{mandate.task}</h2>
+          <dl>
+            <dt>Agent</dt><dd>{mandate.agent_id}</dd>
+            <dt>Total cap</dt><dd>{amount(mandate.max_total, mandate.currency)}</dd>
+            <dt>Per purchase</dt><dd>{amount(mandate.max_per_txn, mandate.currency)}</dd>
+            <dt>Expires</dt><dd>{date(mandate.expires_at)}</dd>
+          </dl>
+          <details><summary>Mandate JSON</summary><pre>{json}</pre></details>
+          <CopyButton text={json} label="Copy mandate JSON" />
+        </article>;
+      })}</div>}
     </DataView>
   </Page>;
 }

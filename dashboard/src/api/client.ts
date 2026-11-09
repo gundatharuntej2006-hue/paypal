@@ -1,3 +1,4 @@
+import type { MandateDraft } from '../lib/mandate';
 import type { EventEnvelope, Mandate } from '../contracts/types';
 import type { BenchmarkReport, Payment } from './models';
 import { stub } from './stub';
@@ -21,6 +22,10 @@ const live: typeof stub = {
   createMandate: (mandate) => request<Mandate>('/mandates', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(mandate),
   }),
+  createMandateOrder: (draft: MandateDraft) => request<{ id: string }>(
+    '/mandates/' + encodeURIComponent(draft.mandate_id) + '/order',
+    { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(draft) },
+  ),
   listPayments: () => request<Payment[]>('/payments'),
   getPaymentEvents: (id) => request<EventEnvelope[]>('/payments/' + encodeURIComponent(id) + '/events'),
   listApprovals: () => request<Payment[]>('/approvals'),
