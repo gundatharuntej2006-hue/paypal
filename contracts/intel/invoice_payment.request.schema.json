@@ -1,0 +1,49 @@
+{
+  "properties": {
+    "payment_id": {
+      "title": "Payment Id",
+      "type": "string"
+    },
+    "capture_id": {
+      "title": "Capture Id",
+      "type": "string"
+    },
+    "amount": {
+      "examples": [
+        "29.99"
+      ],
+      "pattern": "^\\d+(\\.\\d{1,2})?$",
+      "title": "Amount",
+      "type": "string"
+    },
+    "currency": {
+      "examples": [
+        "USD"
+      ],
+      "pattern": "^[A-Z]{3}$",
+      "title": "Currency",
+      "type": "string"
+    },
+    "paid_at": {
+      "anyOf": [
+        {
+          "format": "date-time",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Paid At"
+    }
+  },
+  "required": [
+    "payment_id",
+    "capture_id",
+    "amount",
+    "currency"
+  ],
+  "title": "InvoicePaymentRequest",
+  "type": "object"
+}

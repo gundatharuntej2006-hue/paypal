@@ -1,4 +1,4 @@
-"""Small PayPal REST client: OAuth token caching and webhook signature checks."""
+"""Small PayPal REST client: OAuth token caching, webhook signature checks and a generic API call."""
 
 from __future__ import annotations
 
@@ -11,6 +11,7 @@ import zlib
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from functools import lru_cache
+from typing import Any
 from urllib.parse import urlsplit
 
 import httpx
@@ -55,6 +56,45 @@ class PayPal:
             self._token = body["access_token"]
             self._token_expires = time.monotonic() + int(body.get("expires_in", 300)) - 60
             return self._token
+
+    async def call(
+        self,
+        method: str,
+        path: str,
+        *,
+        json_body: Any = None,
+        params: Mapping[str, str] | None = None,
+        request_id: str | None = None,
+        representation: bool = False,
+    ) -> tuple[int, dict[str, Any]]:
+        """Call a PayPal REST API. Returns (status, body) for 2xx and 4xx answers the caller can interpret.
+
+        Raises PayPalError when PayPal can't be reached, rejects our credentials, rate-limits us or fails (5xx).
+        """
+        headers = {"Content-Type": "application/json"}
+        if request_id:
+            headers["PayPal-Request-Id"] = request_id  # PayPal returns the first result again on a retry
+        if representation:
+            headers["Prefer"] = "return=representation"
+        try:
+            for attempt in (1, 2):
+                headers["Authorization"] = f"Bearer {await self.access_token()}"
+                response = await self._http.request(
+                    method, f"{self.base_url}{path}", json=json_body, params=params, headers=headers
+                )
+                if response.status_code == 401 and attempt == 1:
+                    self._token = None  # token revoked or expired early: get a new one once
+                    continue
+                break
+        except httpx.HTTPError as error:
+            raise PayPalError(f"paypal_unreachable: {type(error).__name__}") from None
+        if response.status_code in (401, 429) or response.status_code >= 500:
+            raise PayPalError(f"paypal_http_{response.status_code}")
+        try:
+            body = response.json() if response.content else {}
+        except ValueError:
+            body = {}
+        return response.status_code, body if isinstance(body, dict) else {"items": body}
 
     async def verify_by_postback(self, headers: Mapping[str, str], raw_body: bytes, webhook_id: str) -> bool:
         """Ask PayPal's verify-webhook-signature API. Does not work for webhook-simulator events."""

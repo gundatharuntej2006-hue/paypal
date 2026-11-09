@@ -6,15 +6,15 @@ Run locally from the intel/ folder:  py -m uvicorn intel.main:app --reload --por
 from __future__ import annotations
 
 import asyncio
-import hmac
 import logging
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any, TypeVar
 
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI
 
-from intel import judge, risk, scan, stub, webhooks
+from intel import judge, ops, risk, scan, stub, webhooks
+from intel.auth import require_token
 from intel.config import Settings, get_settings
 from intel.models import (
     CONTRACT_VERSION,
@@ -29,6 +29,7 @@ from intel.models import (
 log = logging.getLogger("intel")
 app = FastAPI(title="AgentGuard Intelligence Service", version=CONTRACT_VERSION)
 app.include_router(webhooks.router)  # PayPal calls this directly, so no X-Internal-Token
+app.include_router(ops.router)  # reconciliation, payouts, invoices: X-Internal-Token required
 
 R = TypeVar("R", ScanResponse, JudgeResponse, RiskResponse)
 Handler = Callable[[Any], Awaitable[Any]]
@@ -52,16 +53,6 @@ async def run_signal(handler: Handler, req: object, unknown: Callable[[str], R],
         result = unknown("internal_error")
     elapsed_ms = int((time.perf_counter() - start) * 1000)
     return result.model_copy(update={"latency_ms": elapsed_ms})
-
-
-def require_token(
-    x_internal_token: str | None = Header(default=None),
-    settings: Settings = Depends(get_settings),
-) -> None:
-    if settings.api_token and not hmac.compare_digest(
-        (x_internal_token or "").encode(), settings.api_token.encode()
-    ):
-        raise HTTPException(status_code=401, detail="invalid or missing X-Internal-Token")
 
 
 def _handler(name: str, settings: Settings) -> Handler:

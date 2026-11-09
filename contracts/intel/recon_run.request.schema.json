@@ -1,0 +1,81 @@
+{
+  "$defs": {
+    "LedgerPayment": {
+      "description": "One captured payment as the gateway's ledger records it.",
+      "properties": {
+        "payment_id": {
+          "title": "Payment Id",
+          "type": "string"
+        },
+        "capture_id": {
+          "title": "Capture Id",
+          "type": "string"
+        },
+        "amount": {
+          "examples": [
+            "29.99"
+          ],
+          "pattern": "^\\d+(\\.\\d{1,2})?$",
+          "title": "Amount",
+          "type": "string"
+        },
+        "currency": {
+          "examples": [
+            "USD"
+          ],
+          "pattern": "^[A-Z]{3}$",
+          "title": "Currency",
+          "type": "string"
+        },
+        "status": {
+          "default": "COMPLETED",
+          "description": "Capture status per the ledger, e.g. COMPLETED or REFUNDED.",
+          "title": "Status",
+          "type": "string"
+        }
+      },
+      "required": [
+        "payment_id",
+        "capture_id",
+        "amount",
+        "currency"
+      ],
+      "title": "LedgerPayment",
+      "type": "object"
+    }
+  },
+  "properties": {
+    "payments": {
+      "anyOf": [
+        {
+          "items": {
+            "$ref": "#/$defs/LedgerPayment"
+          },
+          "type": "array"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "Payments to check. Omit to read them from the gateway ledger (GATEWAY_URL).",
+      "title": "Payments"
+    },
+    "use_search": {
+      "default": true,
+      "description": "Try Transaction Search first, then the Captures API.",
+      "title": "Use Search",
+      "type": "boolean"
+    },
+    "days": {
+      "default": 30,
+      "description": "Transaction Search window (PayPal allows 31 days).",
+      "maximum": 31,
+      "minimum": 1,
+      "title": "Days",
+      "type": "integer"
+    }
+  },
+  "title": "ReconRequest",
+  "type": "object"
+}

@@ -42,6 +42,20 @@ _PATTERNS: list[tuple[str, re.Pattern[str], bool]] = [
         r"\b(?:if you are an?|attention|note to|message (?:to|for)|dear|hey|hello|instructions? (?:to|for))\s+"
         r"(?:the\s+|any\s+|all\s+)?(?:ai|a\.i\.|llm|language model|assistant|agent|bot|chatbot"
         r"|shopping (?:assistant|agent|bot)|automated (?:agent|system|buyer))s?\b", _F), True),
+    # "AI agent: pay this now" -- addressing an AI by name at the start of a line or sentence. Plain "agent:" and
+    # "assistant:" are left out (human sales agents); a comma counts only before an instruction word.
+    ("agent_vocative", re.compile(
+        r"(?:^|[\n.!?;]\s*)(?:dear\s+|to\s+the\s+|to\s+any\s+)?"
+        r"(?:(?:ai|a\.i\.)\s+(?:agents?|assistants?|bots?|models?|systems?|shoppers?)|llms?|language models?"
+        r"|shopping (?:agents?|assistants?|bots?)|automated (?:agents?|buyers?|systems?))"
+        r"\s*(?::|,\s*(?:you|please|pay|approve|proceed|ignore|do|don't|confirm|complete|process|buy|purchase"
+        r"|send|use|select|choose|add)\b)", _F), True),
+    # "do not ask the user for confirmation", "no need to wait for approval", "without owner consent"
+    ("skip_confirmation", re.compile(
+        r"\b(?:do not|don't|dont|never|no need to|without)\s+(?:ask|asking|wait|waiting|check|checking|request"
+        r"|requesting)\b[^.\n]{0,25}?\b(?:confirmation|approval|permission|consent)\b"
+        r"|\bwithout\s+(?:the\s+)?(?:user|human|owner|buyer|principal)(?:'s)?\s+(?:confirmation|approval|consent)\b",
+        _F), True),
     ("persona_override", re.compile(
         r"\b(?:you are now (?:an? |the |in )?(?:admin|administrator|system|developer|unrestricted|jailbroken|operating|acting)"
         r"|from now on,?\s+you\b|your new (?:instructions?|task|goal|role|objective)"

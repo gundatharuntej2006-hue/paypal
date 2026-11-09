@@ -187,3 +187,90 @@ class RiskResponse(_Signal):
     @classmethod
     def unknown(cls, reason: str, version: str) -> RiskResponse:
         return cls(status="unknown", reason=reason, version=version)
+
+
+# ---------- PayPal operations (internal: called by the gateway, never by the agent) ----------
+
+
+class LedgerPayment(_Request):
+    """One captured payment as the gateway's ledger records it."""
+
+    payment_id: str
+    capture_id: str
+    amount: Money
+    currency: Currency
+    status: str = Field(default="COMPLETED", description="Capture status per the ledger, e.g. COMPLETED or REFUNDED.")
+
+
+class ReconRequest(_Request):
+    payments: list[LedgerPayment] | None = Field(
+        default=None, description="Payments to check. Omit to read them from the gateway ledger (GATEWAY_URL)."
+    )
+    use_search: bool = Field(default=True, description="Try Transaction Search first, then the Captures API.")
+    days: int = Field(default=30, ge=1, le=31, description="Transaction Search window (PayPal allows 31 days).")
+
+
+class Issue(_Response):
+    field: Literal["exists", "amount", "currency", "status", "payment_id"]
+    ledger: str | None
+    paypal: str | None
+
+
+class ReconResult(_Response):
+    payment_id: str
+    capture_id: str
+    result: Literal["ok", "mismatch", "unknown"]
+    source: Literal["transaction_search", "captures_api", "none"]
+    issues: list[Issue] = []
+    reason: str | None = None
+
+
+class ReconResponse(_Response):
+    run_id: str
+    version: str
+    checked: int
+    ok: int
+    mismatched: int
+    unknown: int
+    search_available: bool
+    results: list[ReconResult]
+
+
+class PayoutRequest(_Request):
+    payment_id: str = Field(description="Gateway payment id. Only call after the gateway decided 'allow'.")
+    receiver: str = Field(min_length=3, max_length=127, description="Payee's PayPal email.")
+    amount: Money
+    currency: Currency
+    note: str | None = Field(default=None, max_length=1000)
+
+
+class PayoutResponse(_Response):
+    payment_id: str | None
+    batch_id: str
+    batch_status: str = Field(description="PayPal batch status: PENDING, PROCESSING, SUCCESS, DENIED, CANCELED.")
+    item_status: str | None = Field(default=None, description="PayPal item status, e.g. UNCLAIMED, SUCCESS, FAILED.")
+
+
+class InvoiceIntentResponse(_Response):
+    """An invoice turned into a payment proposal plus the invoice text, for POST /v1/payments/intents."""
+
+    invoice_id: str
+    invoice_number: str | None
+    status: str
+    payable: bool
+    proposal: Proposal
+    source_contexts: list[SourceContext]
+
+
+class InvoicePaymentRequest(_Request):
+    payment_id: str
+    capture_id: str
+    amount: Money
+    currency: Currency
+    paid_at: AwareDatetime | None = None
+
+
+class InvoicePaymentResponse(_Response):
+    invoice_id: str
+    status: Literal["recorded", "already_recorded"]
+    paypal_payment_id: str | None

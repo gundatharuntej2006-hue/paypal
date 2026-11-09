@@ -14,7 +14,7 @@ from typing import Any
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from intel import ledger, paypal
+from intel import ledger, paypal, payouts
 from intel.config import Settings, get_settings
 
 log = logging.getLogger("intel.webhooks")
@@ -110,8 +110,14 @@ def describe(event: dict[str, Any]) -> dict[str, Any]:
     """Map a PayPal event to the ledger's webhook.received payload."""
     resource = event.get("resource") or {}
     related = (resource.get("supplementary_data") or {}).get("related_ids") or {}
-    amount = resource.get("amount") or {}
     resource_type = event.get("resource_type")
+    batch, payout_item = resource.get("batch_header") or {}, resource.get("payout_item") or {}
+    invoice = resource.get("invoice") or (resource if resource_type == "invoices" else {})
+    # Captures use {"value", "currency_code"}; payouts use {"value", "currency"}.
+    amount = (resource.get("amount") or payout_item.get("amount") or batch.get("amount")
+              or invoice.get("amount") or {})
+    payment_id = (resource.get("custom_id") or resource.get("invoice_id") or payout_item.get("sender_item_id")
+                  or payouts.payment_id_from_batch((batch.get("sender_batch_header") or {}).get("sender_batch_id")))
     ids = {
         "order_id": related.get("order_id"),
         "authorization_id": related.get("authorization_id"),
@@ -124,16 +130,25 @@ def describe(event: dict[str, Any]) -> dict[str, Any]:
     elif resource_type == "refund":
         ids["refund_id"] = resource.get("id")
         ids["capture_id"] = ids["capture_id"] or _parent_capture(resource)
+    if batch:
+        ids["payout_batch_id"] = batch.get("payout_batch_id")
+    if payout_item or resource.get("payout_item_id"):
+        ids["payout_batch_id"] = resource.get("payout_batch_id")
+        ids["payout_item_id"] = resource.get("payout_item_id")
+    if invoice:
+        ids["invoice_id"] = invoice.get("id")
     return {
-        # The gateway sets purchase_units[].custom_id = payment_id, which PayPal copies onto these resources.
-        "payment_id": resource.get("custom_id") or resource.get("invoice_id"),
+        # Orders carry custom_id = payment_id (set by the gateway); payouts carry it as sender_item_id and
+        # in sender_batch_id ("ag-<payment_id>"). Invoice events link through invoice_id.
+        "payment_id": payment_id,
         "paypal_event_id": event.get("id"),
         "paypal_event_type": event.get("event_type"),
         "paypal_status": STATUS_BY_EVENT.get(str(event.get("event_type")), "other"),
         "resource_type": resource_type,
-        "resource_status": resource.get("status"),
+        "resource_status": (resource.get("status") or resource.get("transaction_status")
+                            or batch.get("batch_status") or invoice.get("status")),
         "amount": amount.get("value"),
-        "currency": amount.get("currency_code"),
+        "currency": amount.get("currency_code") or amount.get("currency"),
         "summary": event.get("summary"),
         "create_time": event.get("create_time"),
         **{name: value for name, value in ids.items() if value},

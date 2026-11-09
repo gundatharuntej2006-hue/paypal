@@ -1,0 +1,35 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "invoice_id": {
+      "title": "Invoice Id",
+      "type": "string"
+    },
+    "status": {
+      "enum": [
+        "recorded",
+        "already_recorded"
+      ],
+      "title": "Status",
+      "type": "string"
+    },
+    "paypal_payment_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Paypal Payment Id"
+    }
+  },
+  "required": [
+    "invoice_id",
+    "status",
+    "paypal_payment_id"
+  ],
+  "title": "InvoicePaymentResponse",
+  "type": "object"
+}

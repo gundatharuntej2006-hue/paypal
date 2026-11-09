@@ -15,6 +15,12 @@ py -m intel.eval --misses                             # golden-set accuracy per 
 
 On a fresh machine, install first: `pip install -e ".[dev]"`
 
+## Getting access (for judges and teammates)
+
+- **No keys at all:** set `INTEL_MODE=stub`. Every endpoint answers with input-aware canned results (see "Stub triggers" below), which is enough to run the whole system end to end.
+- **Anthropic API key** (for the LLM part of scan and judge): create one at https://console.anthropic.com and set `ANTHROPIC_API_KEY`. Without it the service still runs: clear injections are caught by the rules, risk scoring works fully, and everything the LLM would decide comes back `unknown`, so the gateway steps up instead of allowing.
+- **PayPal sandbox** (for webhooks, reconciliation, payouts, invoices): create a free app at https://developer.paypal.com, then set `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET` and `PAYPAL_WEBHOOK_ID`. Tick **Transaction Search**, **Payouts** and **Invoicing** under the app's features.
+
 ## Settings (environment variables)
 
 | Variable | Default | Meaning |
@@ -30,6 +36,7 @@ On a fresh machine, install first: `pip install -e ".[dev]"`
 | `PAYPAL_WEBHOOK_ID` | none | The ID PayPal shows for our webhook. Use `WEBHOOK_ID` for simulator events |
 | `PAYPAL_WEBHOOK_VERIFY` | `postback` | `postback` asks PayPal's verification API. `local` checks the signature ourselves, which also works for simulator events |
 | `LEDGER_URL`, `LEDGER_TOKEN` | none | The gateway's internal event hook: a full URL, or a bare Render `host:port` (then `http://` and `/internal/ledger/events` are added). Without it, events stay in memory (development only) |
+| `GATEWAY_URL` | host of `LEDGER_URL` | Where reconciliation reads the ledger (`GET /v1/ledger/events`) |
 
 ## PayPal webhooks
 
@@ -39,6 +46,30 @@ On a fresh machine, install first: `pip install -e ".[dev]"`
 2. **Drops duplicates by PayPal event ID.**
 3. **Records the event** in the gateway ledger as `webhook.received`, with the payment, order, authorization, capture and refund IDs.
 4. **Asks PayPal to retry** (a 5xx response) when PayPal or the ledger can't be reached.
+
+Payout and invoice events are linked to their payment too: payouts through `sender_item_id`, invoices through `invoice_id`.
+
+## PayPal operations (internal, called by the gateway)
+
+All need `X-Internal-Token`. None of them decides whether money may move: the gateway calls payouts and invoice payments only after its own `allow`. Schemas are in [../contracts/intel/](../contracts/intel/).
+
+| Endpoint | What it does |
+|---|---|
+| `POST /recon/run` | Compares each captured payment in the ledger with PayPal: amount, currency, status, payment id, and whether PayPal has it at all. Uses Transaction Search, and falls back to the Captures API for anything search doesn't show yet (sandbox search lags by hours). Each difference is written once as `reconciliation.mismatch`; every run writes `reconciliation.completed`. A payment PayPal couldn't be asked about is `unknown`, never `ok` |
+| `POST /payouts` | Sends a payout to a PayPal email. The payment id is the idempotency key, so a retry never pays twice. Writes `payout.created` |
+| `GET /payouts/{batch_id}` | Current payout status from PayPal. Writes `payout.updated` once per new status |
+| `POST /invoices/{id}/intent` | Turns a PayPal invoice into a payment proposal (merchant = invoicer email, amount due, items) plus the invoice's own text as a `kind: invoice` source context. Submit both to the gateway, so the injection scan reads the invoice note and the mandate and risk checks apply |
+| `POST /invoices/{id}/payments` | After `allow` and capture: marks the invoice paid with that capture. Refuses cancelled or already-paid invoices and amounts above what is due. Writes `invoice.paid` |
+
+PayPal has no API for a buyer to pay an invoice directly, so an invoice is paid through the normal Orders flow and then marked paid. A blocked invoice is never marked paid.
+
+Commands:
+
+```
+py -m intel.recon                                     # one reconciliation run (exit 1 when mismatches); use as a Render cron job
+py -m intel.invoices create --to BUYER_EMAIL --amount 29.99 --item "A4 paper, 5 reams" [--note "..."]
+py -m intel.invoices show INV2-XXXX                   # the proposal the gateway would receive
+```
 
 Golden cases live in `intel/golden/*.json`. Add cases there; Tharun's library will be imported into the same format.
 
