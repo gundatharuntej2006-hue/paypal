@@ -55,6 +55,7 @@ type Proposal struct {
 // PaymentIntentRequest is sent by shopping agents to the gateway.
 type PaymentIntentRequest struct {
 	Mandate        Mandate         `json:"mandate"`
+	AgentID        string          `json:"agent_id,omitempty"` // Caller's declared agent identity
 	MerchantID     string          `json:"merchant_id"`
 	MerchantName   string          `json:"merchant_name,omitempty"`
 	Amount         string          `json:"amount"`
@@ -64,6 +65,7 @@ type PaymentIntentRequest struct {
 	AgentReasoning string          `json:"agent_reasoning"`
 	SourceContexts []SourceContext `json:"source_contexts,omitempty"`
 	IdempotencyKey string          `json:"idempotency_key"`
+	DryRun         bool            `json:"dry_run,omitempty"` // Tharun request: evaluate firewall without moving money
 }
 
 // StepUpApprovalRequest is sent to approve a step-up payment.
@@ -107,6 +109,7 @@ type DecisionResponse struct {
 	PayPal       *PayPalDetails `json:"paypal,omitempty"`
 	StepUpToken  string         `json:"step_up_token,omitempty"`
 	AuditEventID string         `json:"audit_event_id"`
+	DryRun       bool           `json:"dry_run,omitempty"`
 }
 
 // LedgerEvent is the append-only ledger audit record.
@@ -132,20 +135,21 @@ type HookEventRequest struct {
 
 // PaymentProjection tracks current status of a payment in projections table.
 type PaymentProjection struct {
-	PaymentID       string       `json:"payment_id"`
-	MandateID       string       `json:"mandate_id"`
-	MerchantID      string       `json:"merchant_id"`
-	Amount          string       `json:"amount"`
-	Currency        string       `json:"currency"`
-	State           string       `json:"state"`
-	Decision        DecisionType `json:"decision"`
-	RiskScore       float64      `json:"risk_score"`
-	StepUpToken     string       `json:"step_up_token,omitempty"`
-	PayPalOrderID   string       `json:"paypal_order_id,omitempty"`
-	PayPalAuthID    string       `json:"paypal_auth_id,omitempty"`
-	PayPalCaptureID string       `json:"paypal_capture_id,omitempty"`
-	CreatedAt       time.Time    `json:"created_at"`
-	UpdatedAt       time.Time    `json:"updated_at"`
+	PaymentID        string       `json:"payment_id"`
+	MandateID        string       `json:"mandate_id"`
+	MerchantID       string       `json:"merchant_id"`
+	Amount           string       `json:"amount"`
+	Currency         string       `json:"currency"`
+	State            string       `json:"state"`
+	Decision         DecisionType `json:"decision"`
+	RiskScore        float64      `json:"risk_score"`
+	StepUpToken      string       `json:"step_up_token,omitempty"`
+	StepUpExpiresAt  *time.Time   `json:"step_up_expires_at,omitempty"`
+	PayPalOrderID    string       `json:"paypal_order_id,omitempty"`
+	PayPalAuthID     string       `json:"paypal_auth_id,omitempty"`
+	PayPalCaptureID  string       `json:"paypal_capture_id,omitempty"`
+	CreatedAt        time.Time    `json:"created_at"`
+	UpdatedAt        time.Time    `json:"updated_at"`
 }
 
 // MandateProjection tracks spent total for a mandate.

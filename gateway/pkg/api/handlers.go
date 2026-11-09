@@ -129,6 +129,11 @@ func (s *Server) handlePaymentIntent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	if req.AgentID == "" {
+		req.AgentID = r.Header.Get("X-Agent-ID")
+	}
+	isDryRun := req.DryRun || r.Header.Get("X-Dry-Run") == "true" || r.URL.Query().Get("dry_run") == "true"
+
 	// Fix 5: Empty idempotency key rejection
 	idempKey := strings.TrimSpace(req.IdempotencyKey)
 	if idempKey == "" {
@@ -332,105 +337,146 @@ func (s *Server) handlePaymentIntent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	decision := s.decisionEng.Evaluate(paymentID, sig)
+	decision.DryRun = isDryRun
 
 	decEvt, _ := s.emit(ctx, "decision.made", &paymentID, &req.Mandate.MandateID, nil, "gateway", map[string]interface{}{
 		"decision":   decision.Decision,
 		"risk_score": decision.RiskScore,
 		"reasons":    decision.Reasons,
 		"checks":     decision.Checks,
+		"dry_run":    isDryRun,
 	})
 	if decEvt != nil {
 		decision.AuditEventID = decEvt.ID
 	}
 
-	// 5. Execute decision with PayPal (Fix 3: Payer consent verification / order linkage)
-	switch decision.Decision {
-	case models.DecisionAllow:
-		orderID := req.Mandate.PayPalOrderID
-		approvalURL := ""
+	// 5. Execute decision with PayPal (Fix 3: Payer consent verification / order linkage, with DryRun support)
+	if isDryRun {
+		switch decision.Decision {
+		case models.DecisionAllow:
+			_ = s.stateMachine.Transition(paymentID, statemachine.StateAuthorized)
+			_ = s.stateMachine.Transition(paymentID, statemachine.StateCaptured)
+			_, _ = s.emit(ctx, "paypal.captured", &paymentID, &req.Mandate.MandateID, nil, "dry_run", map[string]interface{}{
+				"dry_run":  true,
+				"amount":   req.Amount,
+				"currency": req.Currency,
+			})
+			decision.PayPal = &models.PayPalDetails{
+				OrderID:         "DRY_RUN_ORDER_" + paymentID,
+				AuthorizationID: "DRY_RUN_AUTH_" + paymentID,
+				CaptureID:       "DRY_RUN_CAP_" + paymentID,
+				ApprovalURL:     "https://sandbox.agentguard.local/dryrun-approve",
+			}
 
-		// If no pre-approved order attached to mandate, create an order with intent=AUTHORIZE
-		if orderID == "" {
+		case models.DecisionStepUp:
+			_ = s.stateMachine.Transition(paymentID, statemachine.StateStepUpPending)
+			stepUpToken := "stepup_dryrun_" + uuid.New().String()[:12]
+			expiresAt := time.Now().UTC().Add(15 * time.Minute)
+			decision.StepUpToken = stepUpToken
+			decision.PayPal = &models.PayPalDetails{
+				OrderID:     "DRY_RUN_ORDER_" + paymentID,
+				ApprovalURL: "https://sandbox.agentguard.local/dryrun-stepup?token=" + stepUpToken,
+			}
+			_, _ = s.emit(ctx, "payment.step_up_token_issued", &paymentID, &req.Mandate.MandateID, nil, "dry_run", map[string]interface{}{
+				"step_up_token":      stepUpToken,
+				"step_up_expires_at": expiresAt.Format(time.RFC3339),
+			})
+
+		case models.DecisionBlock:
+			_ = s.stateMachine.Transition(paymentID, statemachine.StateRejected)
+			decision.PayPal = nil
+		}
+	} else {
+		switch decision.Decision {
+		case models.DecisionAllow:
+			orderID := req.Mandate.PayPalOrderID
+			approvalURL := ""
+
+			// If no pre-approved order attached to mandate, create an order with intent=AUTHORIZE
+			if orderID == "" {
+				orderResp, err := s.paypalClient.CreateOrder(ctx, paypal.OrderRequest{
+					PaymentID:   paymentID,
+					Amount:      req.Amount,
+					Currency:    req.Currency,
+					Description: fmt.Sprintf("AgentGuard Payment: %s", req.Mandate.Task),
+					RequestID:   "order:" + paymentID,
+				})
+				if err != nil {
+					log.Printf("[gateway] paypal CreateOrder error: %v", err)
+					http.Error(w, fmt.Sprintf("paypal error: %v", err), http.StatusBadGateway)
+					return
+				}
+				orderID = orderResp.ID
+				approvalURL = orderResp.ApprovalURL
+				_, _ = s.emit(ctx, "paypal.order_created", &paymentID, &req.Mandate.MandateID, nil, "paypal", orderResp)
+			}
+
+			// Authorize order
+			authID, err := s.paypalClient.AuthorizeOrder(ctx, orderID, "auth:"+paymentID)
+			if err != nil {
+				log.Printf("[gateway] paypal AuthorizeOrder error: %v", err)
+				http.Error(w, fmt.Sprintf("paypal authorize error: %v", err), http.StatusBadGateway)
+				return
+			}
+			_ = s.stateMachine.Transition(paymentID, statemachine.StateAuthorized)
+			_, _ = s.emit(ctx, "paypal.authorized", &paymentID, &req.Mandate.MandateID, nil, "paypal", map[string]interface{}{
+				"order_id":         orderID,
+				"authorization_id": authID,
+			})
+
+			// Capture authorization for approved amount
+			captureResp, err := s.paypalClient.CaptureAuthorization(ctx, authID, req.Amount, req.Currency, true, "cap:"+paymentID)
+			if err != nil {
+				log.Printf("[gateway] paypal CaptureAuthorization error: %v", err)
+				http.Error(w, fmt.Sprintf("paypal capture error: %v", err), http.StatusBadGateway)
+				return
+			}
+			_ = s.stateMachine.Transition(paymentID, statemachine.StateCaptured)
+			_, _ = s.emit(ctx, "paypal.captured", &paymentID, &req.Mandate.MandateID, nil, "paypal", captureResp)
+
+			decision.PayPal = &models.PayPalDetails{
+				OrderID:         orderID,
+				AuthorizationID: authID,
+				CaptureID:       captureResp.ID,
+				ApprovalURL:     approvalURL,
+			}
+
+		case models.DecisionStepUp:
+			_ = s.stateMachine.Transition(paymentID, statemachine.StateStepUpPending)
+			stepUpToken := "stepup_" + uuid.New().String()[:12]
+			expiresAt := time.Now().UTC().Add(15 * time.Minute)
+			decision.StepUpToken = stepUpToken
+
 			orderResp, err := s.paypalClient.CreateOrder(ctx, paypal.OrderRequest{
 				PaymentID:   paymentID,
 				Amount:      req.Amount,
 				Currency:    req.Currency,
-				Description: fmt.Sprintf("AgentGuard Payment: %s", req.Mandate.Task),
-				RequestID:   "order:" + paymentID,
+				Description: fmt.Sprintf("Human Step-Up Approval Required: %s", req.Mandate.Task),
+				RequestID:   "stepup_order:" + paymentID,
 			})
-			if err != nil {
-				log.Printf("[gateway] paypal CreateOrder error: %v", err)
-				http.Error(w, fmt.Sprintf("paypal error: %v", err), http.StatusBadGateway)
-				return
+			approvalURL := ""
+			orderID := ""
+			if err == nil && orderResp != nil {
+				approvalURL = orderResp.ApprovalURL
+				orderID = orderResp.ID
+				_, _ = s.emit(ctx, "paypal.order_created", &paymentID, &req.Mandate.MandateID, nil, "paypal", orderResp)
 			}
-			orderID = orderResp.ID
-			approvalURL = orderResp.ApprovalURL
-			_, _ = s.emit(ctx, "paypal.order_created", &paymentID, &req.Mandate.MandateID, nil, "paypal", orderResp)
+
+			decision.PayPal = &models.PayPalDetails{
+				OrderID:     orderID,
+				ApprovalURL: approvalURL,
+			}
+
+			// Update projection with step_up_token and expiration
+			_, _ = s.emit(ctx, "payment.step_up_token_issued", &paymentID, &req.Mandate.MandateID, nil, "gateway", map[string]interface{}{
+				"step_up_token":      stepUpToken,
+				"step_up_expires_at": expiresAt.Format(time.RFC3339),
+			})
+
+		case models.DecisionBlock:
+			_ = s.stateMachine.Transition(paymentID, statemachine.StateRejected)
+			decision.PayPal = nil
 		}
-
-		// Authorize order
-		authID, err := s.paypalClient.AuthorizeOrder(ctx, orderID, "auth:"+paymentID)
-		if err != nil {
-			log.Printf("[gateway] paypal AuthorizeOrder error: %v", err)
-			http.Error(w, fmt.Sprintf("paypal authorize error: %v", err), http.StatusBadGateway)
-			return
-		}
-		_ = s.stateMachine.Transition(paymentID, statemachine.StateAuthorized)
-		_, _ = s.emit(ctx, "paypal.authorized", &paymentID, &req.Mandate.MandateID, nil, "paypal", map[string]interface{}{
-			"order_id":         orderID,
-			"authorization_id": authID,
-		})
-
-		// Capture authorization for approved amount
-		captureResp, err := s.paypalClient.CaptureAuthorization(ctx, authID, req.Amount, req.Currency, true, "cap:"+paymentID)
-		if err != nil {
-			log.Printf("[gateway] paypal CaptureAuthorization error: %v", err)
-			http.Error(w, fmt.Sprintf("paypal capture error: %v", err), http.StatusBadGateway)
-			return
-		}
-		_ = s.stateMachine.Transition(paymentID, statemachine.StateCaptured)
-		_, _ = s.emit(ctx, "paypal.captured", &paymentID, &req.Mandate.MandateID, nil, "paypal", captureResp)
-
-		decision.PayPal = &models.PayPalDetails{
-			OrderID:         orderID,
-			AuthorizationID: authID,
-			CaptureID:       captureResp.ID,
-			ApprovalURL:     approvalURL,
-		}
-
-	case models.DecisionStepUp:
-		_ = s.stateMachine.Transition(paymentID, statemachine.StateStepUpPending)
-		stepUpToken := "stepup_" + uuid.New().String()[:12]
-		decision.StepUpToken = stepUpToken
-
-		orderResp, err := s.paypalClient.CreateOrder(ctx, paypal.OrderRequest{
-			PaymentID:   paymentID,
-			Amount:      req.Amount,
-			Currency:    req.Currency,
-			Description: fmt.Sprintf("Human Step-Up Approval Required: %s", req.Mandate.Task),
-			RequestID:   "stepup_order:" + paymentID,
-		})
-		approvalURL := ""
-		orderID := ""
-		if err == nil && orderResp != nil {
-			approvalURL = orderResp.ApprovalURL
-			orderID = orderResp.ID
-			_, _ = s.emit(ctx, "paypal.order_created", &paymentID, &req.Mandate.MandateID, nil, "paypal", orderResp)
-		}
-
-		decision.PayPal = &models.PayPalDetails{
-			OrderID:     orderID,
-			ApprovalURL: approvalURL,
-		}
-
-		// Update projection with step_up_token
-		_, _ = s.emit(ctx, "payment.step_up_token_issued", &paymentID, &req.Mandate.MandateID, nil, "gateway", map[string]interface{}{
-			"step_up_token": stepUpToken,
-		})
-
-	case models.DecisionBlock:
-		_ = s.stateMachine.Transition(paymentID, statemachine.StateRejected)
-		decision.PayPal = nil
 	}
 
 	// Fix 5: Cache the final decision under the idempotency key for safe replay
@@ -484,6 +530,10 @@ func (s *Server) handleApprovePayment(w http.ResponseWriter, r *http.Request) {
 		}
 		if sentToken != proj.StepUpToken {
 			http.Error(w, "invalid or missing step_up_token for human approval", http.StatusForbidden)
+			return
+		}
+		if proj.StepUpExpiresAt != nil && time.Now().After(*proj.StepUpExpiresAt) {
+			http.Error(w, "step_up_token has expired (15-minute validity window)", http.StatusForbidden)
 			return
 		}
 	}

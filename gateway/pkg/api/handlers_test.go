@@ -337,3 +337,82 @@ func TestInternalLedgerHookAcceptance(t *testing.T) {
 		t.Fatalf("expected 409 conflict on duplicate idempotency key, got %d", recDup.Code)
 	}
 }
+
+func TestDryRunModeDoesNotCallPayPal(t *testing.T) {
+	stubIntel := intelclient.NewStubIntelClient()
+	srv, ppMock, _, reg := setupTestServer(stubIntel)
+	handler := SetupRouter(srv)
+
+	m, _ := createTestMandate(t)
+	reg.RegisterPrincipal("user_vivek", m.PublicKey)
+
+	intentReq := models.PaymentIntentRequest{
+		Mandate:        m,
+		MerchantID:     "merchant_a",
+		Amount:         "20.00",
+		Currency:       "USD",
+		Category:       "electronics",
+		Items:          []models.Item{{Name: "USB-C hub", Qty: 1, UnitPrice: "20.00"}},
+		AgentReasoning: "Benchmark scenario test",
+		IdempotencyKey: "idemp_dryrun_test",
+		DryRun:         true, // Tharun request: safe benchmark evaluation
+	}
+
+	body, _ := json.Marshal(intentReq)
+	req := httptest.NewRequest(http.MethodPost, "/v1/payments/intents", bytes.NewBuffer(body))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	var resp models.DecisionResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+
+	if !resp.DryRun {
+		t.Fatal("expected dry_run flag in decision response")
+	}
+	if resp.Decision != models.DecisionAllow {
+		t.Fatalf("expected allow decision, got %s", resp.Decision)
+	}
+	// PayPal mock should NOT have any real order created
+	if len(ppMock.Orders) > 0 {
+		t.Fatalf("dry run must not create PayPal orders, but found %d orders", len(ppMock.Orders))
+	}
+	if len(ppMock.Captures) > 0 {
+		t.Fatalf("dry run must not capture PayPal funds, but found %d captures", len(ppMock.Captures))
+	}
+}
+
+func TestWrongAgentBindingRejected(t *testing.T) {
+	stubIntel := intelclient.NewStubIntelClient()
+	srv, _, _, reg := setupTestServer(stubIntel)
+	handler := SetupRouter(srv)
+
+	m, _ := createTestMandate(t) // Mandate has AgentID: "agent_shopper"
+	reg.RegisterPrincipal("user_vivek", m.PublicKey)
+
+	intentReq := models.PaymentIntentRequest{
+		Mandate:        m,
+		AgentID:        "rogue_agent_99", // Mismatched agent!
+		MerchantID:     "merchant_a",
+		Amount:         "20.00",
+		Currency:       "USD",
+		Category:       "electronics",
+		Items:          []models.Item{{Name: "USB-C hub", Qty: 1, UnitPrice: "20.00"}},
+		IdempotencyKey: "idemp_agent_mismatch",
+	}
+
+	body, _ := json.Marshal(intentReq)
+	req := httptest.NewRequest(http.MethodPost, "/v1/payments/intents", bytes.NewBuffer(body))
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	var resp models.DecisionResponse
+	_ = json.Unmarshal(rec.Body.Bytes(), &resp)
+
+	if resp.Decision != models.DecisionBlock {
+		t.Fatalf("expected block on wrong agent binding, got %s", resp.Decision)
+	}
+}

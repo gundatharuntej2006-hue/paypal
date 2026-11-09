@@ -302,6 +302,11 @@ func (m *MemoryLedger) applyEventToProjections(e *models.LedgerEvent) {
 			if token, ok := data["step_up_token"].(string); ok {
 				proj.StepUpToken = token
 			}
+			if expStr, ok := data["step_up_expires_at"].(string); ok {
+				if t, err := time.Parse(time.RFC3339, expStr); err == nil {
+					proj.StepUpExpiresAt = &t
+				}
+			}
 		case "human.approved":
 			proj.State = "decided"
 			proj.Decision = models.DecisionAllow

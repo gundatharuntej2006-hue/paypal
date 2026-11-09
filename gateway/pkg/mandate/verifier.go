@@ -159,6 +159,14 @@ func (v *Verifier) VerifyMandate(req *models.PaymentIntentRequest, now time.Time
 		return &VerificationResult{Valid: false, FailedReason: ErrNonceReplayed.Error()}, ErrNonceReplayed
 	}
 
+	// 5. Agent identity binding
+	if m.AgentID != "" && req.AgentID != "" && req.AgentID != m.AgentID {
+		return &VerificationResult{
+			Valid:        false,
+			FailedReason: fmt.Sprintf("%s: caller agent '%s' does not match mandate agent '%s'", ErrWrongAgent, req.AgentID, m.AgentID),
+		}, ErrWrongAgent
+	}
+
 	// 5. Currency format & matching
 	if !currencyRegex.MatchString(req.Currency) || !currencyRegex.MatchString(m.Currency) {
 		return &VerificationResult{Valid: false, FailedReason: ErrInvalidCurrencyFormat.Error()}, ErrInvalidCurrencyFormat
