@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -15,8 +16,8 @@ type Config struct {
 	IntelTimeout        time.Duration
 	IntelAPIToken       string
 	InternalLedgerToken string
-	AgentAuthToken      string // Fix 1: Optional caller authentication for agents
-	HumanAuthToken      string // Fix 4: Optional caller authentication for humans
+	AgentAuthToken      string
+	HumanAuthToken      string
 	RiskBlockThreshold  float64
 	RiskStepUpThreshold float64
 
@@ -36,6 +37,11 @@ func Load() *Config {
 	}
 
 	intelURL := getEnv("INTEL_SERVICE_URL", "http://localhost:8000")
+	// Atul Point 2: If Render gives a bare hostport (e.g. agentguard-intel:8000), add http:// prefix
+	if intelURL != "" && !strings.HasPrefix(intelURL, "http://") && !strings.HasPrefix(intelURL, "https://") {
+		intelURL = "http://" + intelURL
+	}
+
 	intelTimeoutMS, _ := strconv.Atoi(getEnv("INTEL_TIMEOUT_MS", "3000"))
 	if intelTimeoutMS <= 0 {
 		intelTimeoutMS = 3000

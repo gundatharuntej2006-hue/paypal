@@ -238,22 +238,69 @@ func (s *Server) handlePaymentIntent(w http.ResponseWriter, r *http.Request) {
 	// 3. Scanning state & Intelligence calls
 	_ = s.stateMachine.Transition(paymentID, statemachine.StateScanning)
 
-	// Fix 6: Query previous payments under this MANDATE (not the newly generated paymentID!)
-	var riskHistory []models.RiskHistoryItem
+	// Atul Point 3: Query previous payments under this MANDATE (excluding current paymentID)
+	// Must include merchant_id, amount, currency, ts, and decision (allow, step_up, block, or pending)
+	riskHistory := []models.RiskHistoryItem{}
 	mandateEvents, err := s.ledger.GetEventsByMandate(ctx, req.Mandate.MandateID)
 	if err == nil {
+		type paymentSummary struct {
+			merchantID string
+			amount     string
+			currency   string
+			ts         time.Time
+			decision   string
+		}
+		summaryByPID := make(map[string]*paymentSummary)
+
 		for _, e := range mandateEvents {
-			if e.Type == "paypal.captured" {
-				var d map[string]interface{}
-				_ = json.Unmarshal(e.Data, &d)
-				amountVal, _ := d["amount"].(string)
-				currencyVal, _ := d["currency"].(string)
+			if e.PaymentID == nil || *e.PaymentID == paymentID {
+				continue // skip current payment
+			}
+			pid := *e.PaymentID
+			summary, exists := summaryByPID[pid]
+			if !exists {
+				summary = &paymentSummary{
+					ts:       e.CreatedAt,
+					decision: "pending",
+				}
+				summaryByPID[pid] = summary
+			}
+
+			var d map[string]interface{}
+			_ = json.Unmarshal(e.Data, &d)
+
+			switch e.Type {
+			case "intent.received":
+				if mID, ok := d["merchant_id"].(string); ok {
+					summary.merchantID = mID
+				}
+				if amt, ok := d["amount"].(string); ok {
+					summary.amount = amt
+				}
+				if cur, ok := d["currency"].(string); ok {
+					summary.currency = cur
+				}
+			case "decision.made":
+				if dec, ok := d["decision"].(string); ok {
+					summary.decision = dec
+				}
+			case "mandate.failed", "human.rejected":
+				summary.decision = "block"
+			case "paypal.captured", "human.approved":
+				summary.decision = "allow"
+			}
+		}
+
+		for pid, sum := range summaryByPID {
+			if sum.amount != "" {
+				pIDCopy := pid
 				riskHistory = append(riskHistory, models.RiskHistoryItem{
-					MerchantID: req.MerchantID,
-					Amount:     amountVal,
-					Currency:   currencyVal,
-					TS:         e.CreatedAt,
-					Decision:   "allow",
+					PaymentID:  &pIDCopy,
+					MerchantID: sum.merchantID,
+					Amount:     sum.amount,
+					Currency:   sum.currency,
+					TS:         sum.ts,
+					Decision:   sum.decision,
 				})
 			}
 		}
