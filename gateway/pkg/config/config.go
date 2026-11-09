@@ -15,6 +15,8 @@ type Config struct {
 	IntelTimeout        time.Duration
 	IntelAPIToken       string
 	InternalLedgerToken string
+	AgentAuthToken      string // Fix 1: Optional caller authentication for agents
+	HumanAuthToken      string // Fix 4: Optional caller authentication for humans
 	RiskBlockThreshold  float64
 	RiskStepUpThreshold float64
 
@@ -65,6 +67,8 @@ func Load() *Config {
 		IntelTimeout:        time.Duration(intelTimeoutMS) * time.Millisecond,
 		IntelAPIToken:       os.Getenv("INTEL_API_TOKEN"),
 		InternalLedgerToken: getEnv("INTERNAL_LEDGER_TOKEN", "secret-gateway-token-123"),
+		AgentAuthToken:      os.Getenv("AGENT_AUTH_TOKEN"),
+		HumanAuthToken:      os.Getenv("HUMAN_AUTH_TOKEN"),
 		RiskBlockThreshold:  blockThresh,
 		RiskStepUpThreshold: stepUpThresh,
 		PayPalEnv:          getEnv("PAYPAL_ENV", "sandbox"),

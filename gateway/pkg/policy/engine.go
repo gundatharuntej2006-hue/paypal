@@ -45,6 +45,7 @@ type Signals struct {
 }
 
 // Evaluate evaluates all signals and computes the final DecisionResponse.
+// Strictly enforces fail-closed behavior: only explicit "clean" and "aligned" pass.
 func (de *DecisionEngine) Evaluate(paymentID string, sig Signals) models.DecisionResponse {
 	resp := models.DecisionResponse{
 		PaymentID: paymentID,
@@ -57,7 +58,7 @@ func (de *DecisionEngine) Evaluate(paymentID string, sig Signals) models.Decisio
 		Reasons: []string{},
 	}
 
-	// 1. Mandate deterministic check
+	// 1. Mandate deterministic check (Fail fast)
 	if !sig.MandateValid {
 		resp.Decision = models.DecisionBlock
 		resp.Checks.Mandate = "fail"
@@ -70,7 +71,7 @@ func (de *DecisionEngine) Evaluate(paymentID string, sig Signals) models.Decisio
 	}
 	resp.Checks.Mandate = "pass"
 
-	// 2. Scan Signal
+	// 2. Scan Signal (Fix 7: Strict enum validation)
 	hasUnknown := false
 	if sig.Scan == nil || sig.Scan.Verdict == "unknown" {
 		resp.Checks.Injection = "unknown"
@@ -81,11 +82,16 @@ func (de *DecisionEngine) Evaluate(paymentID string, sig Signals) models.Decisio
 		resp.Decision = models.DecisionBlock
 		resp.Reasons = append(resp.Reasons, "prompt_injection_detected")
 		return resp
-	} else {
+	} else if sig.Scan.Verdict == "clean" {
 		resp.Checks.Injection = "pass"
+	} else {
+		// Any unrecognized string is strictly treated as unknown / fail-closed
+		resp.Checks.Injection = "unknown"
+		resp.Reasons = append(resp.Reasons, "injection_scan_unrecognized_verdict")
+		hasUnknown = true
 	}
 
-	// 3. Judge Signal
+	// 3. Judge Signal (Fix 7: Strict enum validation)
 	if sig.Judge == nil || sig.Judge.Verdict == "unknown" {
 		resp.Checks.Intent = "unknown"
 		resp.Reasons = append(resp.Reasons, "intent_judge_unknown")
@@ -95,13 +101,18 @@ func (de *DecisionEngine) Evaluate(paymentID string, sig Signals) models.Decisio
 		resp.Decision = models.DecisionBlock
 		resp.Reasons = append(resp.Reasons, "intent_drift_detected")
 		return resp
-	} else {
+	} else if sig.Judge.Verdict == "aligned" {
 		resp.Checks.Intent = "pass"
+	} else {
+		// Any unrecognized string is strictly treated as unknown / fail-closed
+		resp.Checks.Intent = "unknown"
+		resp.Reasons = append(resp.Reasons, "intent_judge_unrecognized_verdict")
+		hasUnknown = true
 	}
 
-	// 4. Risk Signal
+	// 4. Risk Signal (Fix 7: Strict status validation)
 	var riskScore float64
-	if sig.Risk == nil || sig.Risk.Status == "unknown" || sig.Risk.Score == nil {
+	if sig.Risk == nil || sig.Risk.Status != "ok" || sig.Risk.Score == nil {
 		resp.Checks.Risk = "unknown"
 		resp.Reasons = append(resp.Reasons, "risk_score_unknown")
 		hasUnknown = true
@@ -121,7 +132,7 @@ func (de *DecisionEngine) Evaluate(paymentID string, sig Signals) models.Decisio
 		}
 	}
 
-	// 5. Fail-Closed rule: Any unknown / timed-out AI signal mandates step-up, NEVER allow
+	// 5. Fail-Closed rule: Any unknown, timed-out, or unrecognized AI signal mandates step-up, NEVER allow
 	if hasUnknown {
 		resp.Decision = models.DecisionStepUp
 		resp.Reasons = append(resp.Reasons, "fail_closed_step_up_due_to_unknown_signal")

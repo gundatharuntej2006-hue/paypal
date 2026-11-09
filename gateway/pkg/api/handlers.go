@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
@@ -96,16 +97,68 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handlePaymentIntent(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	var req models.PaymentIntentRequest
 
+	// Fix 1: Caller Authentication for Agents (if AGENT_AUTH_TOKEN is configured)
+	if s.cfg.AgentAuthToken != "" {
+		authHeader := r.Header.Get("Authorization")
+		apiKeyHeader := r.Header.Get("X-Agent-Key")
+		token := ""
+		if strings.HasPrefix(authHeader, "Bearer ") {
+			token = strings.TrimPrefix(authHeader, "Bearer ")
+		} else if apiKeyHeader != "" {
+			token = apiKeyHeader
+		}
+
+		if token != s.cfg.AgentAuthToken {
+			http.Error(w, "unauthorized agent caller: invalid or missing authentication token", http.StatusUnauthorized)
+			return
+		}
+	}
+
+	// Read body with 2MB limit
+	r.Body = http.MaxBytesReader(w, r.Body, 2*1024*1024)
 	body, err := io.ReadAll(r.Body)
 	if err != nil {
-		http.Error(w, "failed to read body", http.StatusBadRequest)
+		http.Error(w, "request payload exceeds maximum size limit (2MB)", http.StatusRequestEntityTooLarge)
 		return
 	}
+
+	var req models.PaymentIntentRequest
 	if err := json.Unmarshal(body, &req); err != nil {
 		http.Error(w, fmt.Sprintf("invalid json payload: %v", err), http.StatusBadRequest)
 		return
+	}
+
+	// Fix 5: Empty idempotency key rejection
+	idempKey := strings.TrimSpace(req.IdempotencyKey)
+	if idempKey == "" {
+		http.Error(w, "idempotency_key is required and cannot be empty", http.StatusBadRequest)
+		return
+	}
+
+	// Fix 5: Reliable Idempotency Recovery - return original cached decision if seen
+	if cachedDec, err := s.ledger.GetDecisionByIdempotencyKey(ctx, idempKey); err == nil && cachedDec != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Cache-Lookup", "HIT")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(cachedDec)
+		return
+	}
+
+	// Fix 8: Strict Validation & Source Context Limits
+	if len(req.SourceContexts) > 50 {
+		http.Error(w, "source_contexts limit exceeded (maximum 50 contexts allowed)", http.StatusBadRequest)
+		return
+	}
+	for i, sc := range req.SourceContexts {
+		if len(sc.Text) > 200_000 {
+			http.Error(w, fmt.Sprintf("source_context[%d] text exceeds maximum length of 200,000 characters", i), http.StatusBadRequest)
+			return
+		}
+		if len(sc.HTML) > 1_000_000 {
+			http.Error(w, fmt.Sprintf("source_context[%d] html exceeds maximum length of 1,000,000 characters", i), http.StatusBadRequest)
+			return
+		}
 	}
 
 	paymentID := "pay_" + uuid.New().String()[:8]
@@ -115,31 +168,26 @@ func (s *Server) handlePaymentIntent(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// 1. Record intent.received
-	intentIdemp := req.IdempotencyKey
-	var idempPtr *string
-	if intentIdemp != "" {
-		key := "intent:" + intentIdemp
-		idempPtr = &key
-	}
-	intentEvt, err := s.emit(ctx, "intent.received", &paymentID, &req.Mandate.MandateID, idempPtr, "gateway", map[string]interface{}{
-		"merchant_id":      req.MerchantID,
-		"merchant_name":    req.MerchantName,
-		"amount":           req.Amount,
-		"currency":         req.Currency,
-		"items_count":      len(req.Items),
-		"agent_reasoning":  req.AgentReasoning,
-		"contexts_count":   len(req.SourceContexts),
+	intentEventKey := "intent:" + idempKey
+	intentEvt, err := s.emit(ctx, "intent.received", &paymentID, &req.Mandate.MandateID, &intentEventKey, "gateway", map[string]interface{}{
+		"merchant_id":     req.MerchantID,
+		"merchant_name":   req.MerchantName,
+		"amount":          req.Amount,
+		"currency":        req.Currency,
+		"items_count":     len(req.Items),
+		"agent_reasoning": req.AgentReasoning,
+		"contexts_count":  len(req.SourceContexts),
 	})
 	if err != nil {
 		if errors.Is(err, ledger.ErrDuplicateEvent) {
-			http.Error(w, "duplicate intent request (idempotency key conflict)", http.StatusConflict)
+			http.Error(w, "duplicate intent request in-flight", http.StatusConflict)
 			return
 		}
 		http.Error(w, fmt.Sprintf("ledger error: %v", err), http.StatusInternalServerError)
 		return
 	}
 
-	// 2. Deterministic Mandate Verification
+	// 2. Deterministic Mandate Verification (includes Fix 2: principal key registry, Fix 8: formats, Fix 9: item reconciliation)
 	now := time.Now().UTC()
 	vRes, vErr := s.verifier.VerifyMandate(&req, now)
 	if vErr != nil || !vRes.Valid {
@@ -172,6 +220,9 @@ func (s *Server) handlePaymentIntent(w http.ResponseWriter, r *http.Request) {
 			AuditEventID: auditID,
 		}
 
+		// Cache decision for idempotent retry recovery
+		_ = s.ledger.SaveDecisionIdempotency(ctx, idempKey, &decision)
+
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(decision)
@@ -187,18 +238,20 @@ func (s *Server) handlePaymentIntent(w http.ResponseWriter, r *http.Request) {
 	// 3. Scanning state & Intelligence calls
 	_ = s.stateMachine.Transition(paymentID, statemachine.StateScanning)
 
-	// Fetch history from projections for risk scoring
+	// Fix 6: Query previous payments under this MANDATE (not the newly generated paymentID!)
 	var riskHistory []models.RiskHistoryItem
-	eventsList, err := s.ledger.GetEventsByPayment(ctx, paymentID)
+	mandateEvents, err := s.ledger.GetEventsByMandate(ctx, req.Mandate.MandateID)
 	if err == nil {
-		for _, e := range eventsList {
+		for _, e := range mandateEvents {
 			if e.Type == "paypal.captured" {
 				var d map[string]interface{}
 				_ = json.Unmarshal(e.Data, &d)
+				amountVal, _ := d["amount"].(string)
+				currencyVal, _ := d["currency"].(string)
 				riskHistory = append(riskHistory, models.RiskHistoryItem{
 					MerchantID: req.MerchantID,
-					Amount:     req.Amount,
-					Currency:   req.Currency,
+					Amount:     amountVal,
+					Currency:   currencyVal,
 					TS:         e.CreatedAt,
 					Decision:   "allow",
 				})
@@ -220,7 +273,7 @@ func (s *Server) handlePaymentIntent(w http.ResponseWriter, r *http.Request) {
 		_, _ = s.emit(ctx, "risk.scored", &paymentID, &req.Mandate.MandateID, nil, "intel", riskResp)
 	}
 
-	// 4. Decision Engine
+	// 4. Decision Engine (Fix 7: Strict fail-closed verification)
 	_ = s.stateMachine.Transition(paymentID, statemachine.StateDecided)
 	sig := policy.Signals{
 		MandateValid:    true,
@@ -243,26 +296,33 @@ func (s *Server) handlePaymentIntent(w http.ResponseWriter, r *http.Request) {
 		decision.AuditEventID = decEvt.ID
 	}
 
-	// 5. Execute decision with PayPal
+	// 5. Execute decision with PayPal (Fix 3: Payer consent verification / order linkage)
 	switch decision.Decision {
 	case models.DecisionAllow:
-		// Create order with intent=AUTHORIZE
-		orderResp, err := s.paypalClient.CreateOrder(ctx, paypal.OrderRequest{
-			PaymentID:   paymentID,
-			Amount:      req.Amount,
-			Currency:    req.Currency,
-			Description: fmt.Sprintf("AgentGuard Payment: %s", req.Mandate.Task),
-			RequestID:   "order:" + paymentID,
-		})
-		if err != nil {
-			log.Printf("[gateway] paypal CreateOrder error: %v", err)
-			http.Error(w, fmt.Sprintf("paypal error: %v", err), http.StatusBadGateway)
-			return
+		orderID := req.Mandate.PayPalOrderID
+		approvalURL := ""
+
+		// If no pre-approved order attached to mandate, create an order with intent=AUTHORIZE
+		if orderID == "" {
+			orderResp, err := s.paypalClient.CreateOrder(ctx, paypal.OrderRequest{
+				PaymentID:   paymentID,
+				Amount:      req.Amount,
+				Currency:    req.Currency,
+				Description: fmt.Sprintf("AgentGuard Payment: %s", req.Mandate.Task),
+				RequestID:   "order:" + paymentID,
+			})
+			if err != nil {
+				log.Printf("[gateway] paypal CreateOrder error: %v", err)
+				http.Error(w, fmt.Sprintf("paypal error: %v", err), http.StatusBadGateway)
+				return
+			}
+			orderID = orderResp.ID
+			approvalURL = orderResp.ApprovalURL
+			_, _ = s.emit(ctx, "paypal.order_created", &paymentID, &req.Mandate.MandateID, nil, "paypal", orderResp)
 		}
-		_, _ = s.emit(ctx, "paypal.order_created", &paymentID, &req.Mandate.MandateID, nil, "paypal", orderResp)
 
 		// Authorize order
-		authID, err := s.paypalClient.AuthorizeOrder(ctx, orderResp.ID, "auth:"+paymentID)
+		authID, err := s.paypalClient.AuthorizeOrder(ctx, orderID, "auth:"+paymentID)
 		if err != nil {
 			log.Printf("[gateway] paypal AuthorizeOrder error: %v", err)
 			http.Error(w, fmt.Sprintf("paypal authorize error: %v", err), http.StatusBadGateway)
@@ -270,7 +330,7 @@ func (s *Server) handlePaymentIntent(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = s.stateMachine.Transition(paymentID, statemachine.StateAuthorized)
 		_, _ = s.emit(ctx, "paypal.authorized", &paymentID, &req.Mandate.MandateID, nil, "paypal", map[string]interface{}{
-			"order_id":         orderResp.ID,
+			"order_id":         orderID,
 			"authorization_id": authID,
 		})
 
@@ -285,15 +345,17 @@ func (s *Server) handlePaymentIntent(w http.ResponseWriter, r *http.Request) {
 		_, _ = s.emit(ctx, "paypal.captured", &paymentID, &req.Mandate.MandateID, nil, "paypal", captureResp)
 
 		decision.PayPal = &models.PayPalDetails{
-			OrderID:         orderResp.ID,
+			OrderID:         orderID,
 			AuthorizationID: authID,
 			CaptureID:       captureResp.ID,
-			ApprovalURL:     orderResp.ApprovalURL,
+			ApprovalURL:     approvalURL,
 		}
 
 	case models.DecisionStepUp:
 		_ = s.stateMachine.Transition(paymentID, statemachine.StateStepUpPending)
-		// Create PayPal order so human has an approval URL
+		stepUpToken := "stepup_" + uuid.New().String()[:12]
+		decision.StepUpToken = stepUpToken
+
 		orderResp, err := s.paypalClient.CreateOrder(ctx, paypal.OrderRequest{
 			PaymentID:   paymentID,
 			Amount:      req.Amount,
@@ -309,23 +371,30 @@ func (s *Server) handlePaymentIntent(w http.ResponseWriter, r *http.Request) {
 			_, _ = s.emit(ctx, "paypal.order_created", &paymentID, &req.Mandate.MandateID, nil, "paypal", orderResp)
 		}
 
-		decision.StepUpToken = "stepup_" + uuid.New().String()[:12]
 		decision.PayPal = &models.PayPalDetails{
 			OrderID:     orderID,
 			ApprovalURL: approvalURL,
 		}
 
+		// Update projection with step_up_token
+		_, _ = s.emit(ctx, "payment.step_up_token_issued", &paymentID, &req.Mandate.MandateID, nil, "gateway", map[string]interface{}{
+			"step_up_token": stepUpToken,
+		})
+
 	case models.DecisionBlock:
 		_ = s.stateMachine.Transition(paymentID, statemachine.StateRejected)
-		// Void if order exists, or record block
 		decision.PayPal = nil
 	}
+
+	// Fix 5: Cache the final decision under the idempotency key for safe replay
+	_ = s.ledger.SaveDecisionIdempotency(ctx, idempKey, &decision)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(decision)
 }
 
+// Fix 4: Hardened Human Step-Up Approval
 func (s *Server) handleApprovePayment(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	paymentID := r.PathValue("id")
@@ -334,9 +403,23 @@ func (s *Server) handleApprovePayment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Caller Authentication for Human approvals (if HUMAN_AUTH_TOKEN configured)
+	if s.cfg.HumanAuthToken != "" {
+		authHeader := r.Header.Get("Authorization")
+		if authHeader != "Bearer "+s.cfg.HumanAuthToken {
+			http.Error(w, "unauthorized human approver", http.StatusUnauthorized)
+			return
+		}
+	}
+
+	var approvalReq models.StepUpApprovalRequest
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&approvalReq)
+	}
+
 	state, err := s.stateMachine.Get(paymentID)
 	if err != nil || state != statemachine.StateStepUpPending {
-		http.Error(w, fmt.Sprintf("payment cannot be approved in state %s", state), http.StatusBadRequest)
+		http.Error(w, fmt.Sprintf("payment cannot be approved in state '%s' (must be 'step_up_pending')", state), http.StatusBadRequest)
 		return
 	}
 
@@ -346,29 +429,60 @@ func (s *Server) handleApprovePayment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	_, _ = s.emit(ctx, "human.approved", &paymentID, &proj.MandateID, nil, "human", map[string]interface{}{
-		"approved_by": "human_principal",
-		"payment_id":  paymentID,
-	})
+	// Fix 4: Validate step_up_token
+	if proj.StepUpToken != "" {
+		sentToken := approvalReq.StepUpToken
+		if sentToken == "" {
+			sentToken = r.Header.Get("X-Step-Up-Token")
+		}
+		if sentToken != proj.StepUpToken {
+			http.Error(w, "invalid or missing step_up_token for human approval", http.StatusForbidden)
+			return
+		}
+	}
 
-	// Authorize & capture
-	authID, err := s.paypalClient.AuthorizeOrder(ctx, proj.PayPalOrderID, "auth_stepup:"+paymentID)
-	if err != nil {
+	// Authorize order if not yet authorized
+	authID := proj.PayPalAuthID
+	if authID == "" && proj.PayPalOrderID != "" {
+		authorizedID, authErr := s.paypalClient.AuthorizeOrder(ctx, proj.PayPalOrderID, "auth_stepup:"+paymentID)
+		if authErr != nil {
+			log.Printf("[gateway] step-up authorize failed: %v", authErr)
+			http.Error(w, fmt.Sprintf("paypal authorization failed: %v", authErr), http.StatusBadGateway)
+			return
+		}
+		authID = authorizedID
+	}
+	if authID == "" {
 		authID = "AUTH_STEPUP_" + paymentID
 	}
 	_ = s.stateMachine.Transition(paymentID, statemachine.StateAuthorized)
 
-	capResp, err := s.paypalClient.CaptureAuthorization(ctx, authID, proj.Amount, proj.Currency, true, "cap_stepup:"+paymentID)
-	if err == nil && capResp != nil {
-		_ = s.stateMachine.Transition(paymentID, statemachine.StateCaptured)
-		_, _ = s.emit(ctx, "paypal.captured", &paymentID, &proj.MandateID, nil, "paypal", capResp)
+	// Fix 4: CRITICAL - Only report approved if CaptureAuthorization actually succeeds!
+	capResp, capErr := s.paypalClient.CaptureAuthorization(ctx, authID, proj.Amount, proj.Currency, true, "cap_stepup:"+paymentID)
+	if capErr != nil || capResp == nil {
+		log.Printf("[gateway] step-up capture failed: %v", capErr)
+		_ = s.stateMachine.Transition(paymentID, statemachine.StateRejected)
+		_, _ = s.emit(ctx, "paypal.capture_failed", &paymentID, &proj.MandateID, nil, "paypal", map[string]interface{}{
+			"error": fmt.Sprintf("%v", capErr),
+		})
+		http.Error(w, fmt.Sprintf("paypal capture failed: %v", capErr), http.StatusBadGateway)
+		return
 	}
+
+	// All succeeded
+	_ = s.stateMachine.Transition(paymentID, statemachine.StateCaptured)
+	_, _ = s.emit(ctx, "human.approved", &paymentID, &proj.MandateID, nil, "human", map[string]interface{}{
+		"approved_by": "human_principal",
+		"payment_id":  paymentID,
+	})
+	_, _ = s.emit(ctx, "paypal.captured", &paymentID, &proj.MandateID, nil, "paypal", capResp)
 
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(map[string]interface{}{
 		"payment_id": paymentID,
 		"status":     "approved",
 		"decision":   "allow",
+		"capture_id": capResp.ID,
 	})
 }
 
@@ -451,7 +565,6 @@ func (s *Server) handleInternalLedgerHook(w http.ResponseWriter, r *http.Request
 	err = s.ledger.AppendEvent(ctx, event)
 	if err != nil {
 		if errors.Is(err, ledger.ErrDuplicateEvent) {
-			// Atul's contract: return 409 when idempotency_key already exists
 			http.Error(w, "duplicate idempotency_key", http.StatusConflict)
 			return
 		}
@@ -485,7 +598,6 @@ func (s *Server) handleSSEEvents(w http.ResponseWriter, r *http.Request) {
 	eventCh, unsubscribe := s.broker.Subscribe(paymentIDFilter)
 	defer unsubscribe()
 
-	// Initial heartbeat comment
 	fmt.Fprintf(w, ": connection established\n\n")
 	flusher.Flush()
 

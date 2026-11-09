@@ -3,8 +3,11 @@ package mandate
 import (
 	"errors"
 	"fmt"
+	"math"
+	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"gateway/pkg/crypto"
@@ -15,6 +18,8 @@ var (
 	ErrExpiredMandate        = errors.New("mandate has expired")
 	ErrNotYetValid           = errors.New("mandate is not yet valid")
 	ErrForgedSignature       = errors.New("mandate signature verification failed: forged or tampered")
+	ErrUntrustedPrincipalKey = errors.New("mandate public key does not match trusted principal registry")
+	ErrUnknownPrincipal      = errors.New("principal is not registered in trusted registry")
 	ErrDisallowedMerchant    = errors.New("merchant is not in mandate allowed_merchants list")
 	ErrDisallowedCategory    = errors.New("purchase category is not in mandate allowed_categories list")
 	ErrCurrencyMismatch      = errors.New("purchase currency does not match mandate currency")
@@ -22,7 +27,50 @@ var (
 	ErrTotalCapExceeded       = errors.New("cumulative spending exceeds max_total limit")
 	ErrWrongAgent            = errors.New("requesting agent does not match authorized agent_id in mandate")
 	ErrInvalidAmountFormat   = errors.New("invalid money amount format")
+	ErrInvalidCurrencyFormat = errors.New("invalid currency code: must be 3-letter ISO code")
+	ErrAmountItemMismatch    = errors.New("declared payment amount does not match sum of item quantities and unit prices")
+	ErrMissingMerchant       = errors.New("merchant_id is required")
 )
+
+var (
+	moneyRegex    = regexp.MustCompile(`^\d+(\.\d{1,2})?$`)
+	currencyRegex = regexp.MustCompile(`^[A-Z]{3}$`)
+)
+
+// PrincipalRegistry maps trusted principal IDs to their authorized Ed25519 public keys.
+type PrincipalRegistry interface {
+	GetPublicKey(principalID string) (string, error)
+	RegisterPrincipal(principalID string, publicKeyBase64 string)
+}
+
+// MemoryPrincipalRegistry is a thread-safe registry of trusted principals.
+type MemoryPrincipalRegistry struct {
+	mu   sync.RWMutex
+	keys map[string]string
+}
+
+func NewMemoryPrincipalRegistry() *MemoryPrincipalRegistry {
+	return &MemoryPrincipalRegistry{
+		keys: make(map[string]string),
+	}
+}
+
+func (r *MemoryPrincipalRegistry) GetPublicKey(principalID string) (string, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	key, ok := r.keys[principalID]
+	if !ok {
+		return "", ErrUnknownPrincipal
+	}
+	return key, nil
+}
+
+func (r *MemoryPrincipalRegistry) RegisterPrincipal(principalID string, publicKeyBase64 string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.keys[principalID] = publicKeyBase64
+}
 
 // SpentTracker looks up total cumulative spent amount for a mandate.
 type SpentTracker interface {
@@ -48,15 +96,24 @@ func (m *MemorySpentTracker) AddSpent(mandateID string, amount float64) {
 
 // Verifier handles deterministic gate policy verification on mandates.
 type Verifier struct {
-	nonceStore   NonceStore
-	spentTracker SpentTracker
+	nonceStore        NonceStore
+	spentTracker       SpentTracker
+	principalRegistry PrincipalRegistry
+	strictRegistry    bool
 }
 
-func NewVerifier(nonceStore NonceStore, tracker SpentTracker) *Verifier {
+func NewVerifier(nonceStore NonceStore, tracker SpentTracker, registry PrincipalRegistry) *Verifier {
 	return &Verifier{
-		nonceStore:   nonceStore,
-		spentTracker: tracker,
+		nonceStore:        nonceStore,
+		spentTracker:       tracker,
+		principalRegistry: registry,
+		strictRegistry:    registry != nil,
 	}
+}
+
+// SetStrictRegistry toggles whether unregistered principals are rejected.
+func (v *Verifier) SetStrictRegistry(strict bool) {
+	v.strictRegistry = strict
 }
 
 // VerificationResult describes the outcome of deterministic mandate checks.
@@ -78,21 +135,41 @@ func (v *Verifier) VerifyMandate(req *models.PaymentIntentRequest, now time.Time
 		return &VerificationResult{Valid: false, FailedReason: ErrNotYetValid.Error()}, ErrNotYetValid
 	}
 
-	// 2. Cryptographic signature check (Ed25519)
+	// 2. Principal Key Registry Check (Fix 2: prevent self-signed attacker mandates)
+	if v.principalRegistry != nil {
+		trustedKey, err := v.principalRegistry.GetPublicKey(m.PrincipalID)
+		if err != nil {
+			if v.strictRegistry {
+				return &VerificationResult{Valid: false, FailedReason: ErrUnknownPrincipal.Error()}, ErrUnknownPrincipal
+			}
+		} else if trustedKey != m.PublicKey {
+			return &VerificationResult{Valid: false, FailedReason: ErrUntrustedPrincipalKey.Error()}, ErrUntrustedPrincipalKey
+		}
+	}
+
+	// 3. Cryptographic signature check (Ed25519)
 	validSig, err := crypto.VerifyMandateSignature(m)
 	if err != nil || !validSig {
 		return &VerificationResult{Valid: false, FailedReason: ErrForgedSignature.Error()}, ErrForgedSignature
 	}
 
-	// 3. Nonce replay protection
+	// 4. Nonce replay protection
 	ok, err := v.nonceStore.CheckAndConsume(m.Nonce, m.MandateID)
 	if err != nil || !ok {
 		return &VerificationResult{Valid: false, FailedReason: ErrNonceReplayed.Error()}, ErrNonceReplayed
 	}
 
-	// 4. Currency matching
+	// 5. Currency format & matching
+	if !currencyRegex.MatchString(req.Currency) || !currencyRegex.MatchString(m.Currency) {
+		return &VerificationResult{Valid: false, FailedReason: ErrInvalidCurrencyFormat.Error()}, ErrInvalidCurrencyFormat
+	}
 	if strings.ToUpper(req.Currency) != strings.ToUpper(m.Currency) {
 		return &VerificationResult{Valid: false, FailedReason: ErrCurrencyMismatch.Error()}, ErrCurrencyMismatch
+	}
+
+	// 6. Money format validation
+	if !moneyRegex.MatchString(req.Amount) || !moneyRegex.MatchString(m.MaxPerTxn) || !moneyRegex.MatchString(m.MaxTotal) {
+		return &VerificationResult{Valid: false, FailedReason: ErrInvalidAmountFormat.Error()}, ErrInvalidAmountFormat
 	}
 
 	// Parse amounts safely
@@ -111,7 +188,7 @@ func (v *Verifier) VerifyMandate(req *models.PaymentIntentRequest, now time.Time
 		return &VerificationResult{Valid: false, FailedReason: "invalid max_total format in mandate"}, ErrInvalidAmountFormat
 	}
 
-	// 5. Per-transaction cap
+	// 7. Per-transaction cap
 	if reqAmount > maxPerTxn {
 		return &VerificationResult{
 			Valid:        false,
@@ -119,7 +196,7 @@ func (v *Verifier) VerifyMandate(req *models.PaymentIntentRequest, now time.Time
 		}, ErrPerTxnCapExceeded
 	}
 
-	// 6. Cumulative total cap
+	// 8. Cumulative total cap
 	var totalSpent float64
 	if v.spentTracker != nil {
 		totalSpent, err = v.spentTracker.GetTotalSpent(m.MandateID)
@@ -134,7 +211,12 @@ func (v *Verifier) VerifyMandate(req *models.PaymentIntentRequest, now time.Time
 		}, ErrTotalCapExceeded
 	}
 
-	// 7. Merchant allowlist check
+	// 9. Merchant validation
+	if strings.TrimSpace(req.MerchantID) == "" {
+		return &VerificationResult{Valid: false, FailedReason: ErrMissingMerchant.Error()}, ErrMissingMerchant
+	}
+
+	// 10. Merchant allowlist check
 	if len(m.AllowedMerchants) > 0 {
 		merchantAllowed := false
 		for _, allowed := range m.AllowedMerchants {
@@ -148,7 +230,7 @@ func (v *Verifier) VerifyMandate(req *models.PaymentIntentRequest, now time.Time
 		}
 	}
 
-	// 8. Category allowlist check
+	// 11. Category allowlist check
 	if len(m.AllowedCategories) > 0 {
 		categoryAllowed := false
 		if req.Category != "" {
@@ -159,7 +241,6 @@ func (v *Verifier) VerifyMandate(req *models.PaymentIntentRequest, now time.Time
 				}
 			}
 		}
-		// Also check item-level categories if top-level category not matched
 		if !categoryAllowed {
 			for _, item := range req.Items {
 				if item.Category != "" {
@@ -177,8 +258,34 @@ func (v *Verifier) VerifyMandate(req *models.PaymentIntentRequest, now time.Time
 		}
 	}
 
+	// 12. Fix 9: Reconcile amount against items totals (prevent amount-splitting / ghost amounts)
+	if len(req.Items) > 0 {
+		var itemCents int64
+		for _, item := range req.Items {
+			if item.Qty <= 0 {
+				return &VerificationResult{Valid: false, FailedReason: "item qty must be >= 1"}, ErrAmountItemMismatch
+			}
+			if !moneyRegex.MatchString(item.UnitPrice) {
+				return &VerificationResult{Valid: false, FailedReason: "invalid item unit_price format"}, ErrInvalidAmountFormat
+			}
+			unitPriceFloat, err := strconv.ParseFloat(item.UnitPrice, 64)
+			if err != nil {
+				return &VerificationResult{Valid: false, FailedReason: "invalid item unit_price value"}, ErrInvalidAmountFormat
+			}
+			itemCents += int64(item.Qty) * int64(math.Round(unitPriceFloat*100))
+		}
+
+		declaredCents := int64(math.Round(reqAmount * 100))
+		if itemCents != declaredCents {
+			return &VerificationResult{
+				Valid:        false,
+				FailedReason: fmt.Sprintf("%s: items sum to %.2f but request declared %.2f", ErrAmountItemMismatch, float64(itemCents)/100.0, reqAmount),
+			}, ErrAmountItemMismatch
+		}
+	}
+
 	return &VerificationResult{
 		Valid:   true,
-		Reasons: []string{"signature_verified", "nonce_fresh", "within_caps", "merchant_allowed"},
+		Reasons: []string{"signature_verified", "principal_trusted", "nonce_fresh", "within_caps", "merchant_allowed", "items_reconciled"},
 	}, nil
 }

@@ -17,8 +17,8 @@ import (
 )
 
 var (
-	ErrDuplicateEvent    = errors.New("event with idempotency_key already recorded (conflict)")
-	ErrNotFound          = errors.New("record not found in ledger")
+	ErrDuplicateEvent = errors.New("event with idempotency_key already recorded (conflict)")
+	ErrNotFound       = errors.New("record not found in ledger")
 )
 
 // Ledger defines operations for the append-only event store and projections.
@@ -26,10 +26,13 @@ type Ledger interface {
 	AppendEvent(ctx context.Context, event *models.LedgerEvent) error
 	GetEvent(ctx context.Context, eventID string) (*models.LedgerEvent, error)
 	GetEventsByPayment(ctx context.Context, paymentID string) ([]models.LedgerEvent, error)
+	GetEventsByMandate(ctx context.Context, mandateID string) ([]models.LedgerEvent, error)
 	ListEvents(ctx context.Context, limit int) ([]models.LedgerEvent, error)
 	GetPaymentProjection(ctx context.Context, paymentID string) (*models.PaymentProjection, error)
 	GetMandateProjection(ctx context.Context, mandateID string) (*models.MandateProjection, error)
 	GetTotalSpent(mandateID string) (float64, error)
+	GetDecisionByIdempotencyKey(ctx context.Context, idempKey string) (*models.DecisionResponse, error)
+	SaveDecisionIdempotency(ctx context.Context, idempKey string, resp *models.DecisionResponse) error
 	Replay(ctx context.Context) error
 	Close() error
 }
@@ -44,6 +47,9 @@ type MemoryLedger struct {
 	eventsByID    map[string]*models.LedgerEvent
 	seenIdempKeys map[string]bool
 
+	// Idempotency decision cache (Fix 5: recovery of original decision)
+	cachedDecisions map[string]*models.DecisionResponse
+
 	// Projections
 	paymentProjections map[string]*models.PaymentProjection
 	mandateProjections map[string]*models.MandateProjection
@@ -53,6 +59,7 @@ func NewMemoryLedger() *MemoryLedger {
 	return &MemoryLedger{
 		eventsByID:         make(map[string]*models.LedgerEvent),
 		seenIdempKeys:      make(map[string]bool),
+		cachedDecisions:    make(map[string]*models.DecisionResponse),
 		paymentProjections: make(map[string]*models.PaymentProjection),
 		mandateProjections: make(map[string]*models.MandateProjection),
 	}
@@ -106,6 +113,19 @@ func (m *MemoryLedger) GetEventsByPayment(ctx context.Context, paymentID string)
 	var result []models.LedgerEvent
 	for _, e := range m.events {
 		if e.PaymentID != nil && *e.PaymentID == paymentID {
+			result = append(result, e)
+		}
+	}
+	return result, nil
+}
+
+func (m *MemoryLedger) GetEventsByMandate(ctx context.Context, mandateID string) ([]models.LedgerEvent, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var result []models.LedgerEvent
+	for _, e := range m.events {
+		if e.MandateID != nil && *e.MandateID == mandateID {
 			result = append(result, e)
 		}
 	}
@@ -168,6 +188,27 @@ func (m *MemoryLedger) GetTotalSpent(mandateID string) (float64, error) {
 		return 0.0, nil
 	}
 	return spent, nil
+}
+
+func (m *MemoryLedger) GetDecisionByIdempotencyKey(ctx context.Context, idempKey string) (*models.DecisionResponse, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	dec, ok := m.cachedDecisions[idempKey]
+	if !ok {
+		return nil, ErrNotFound
+	}
+	decCopy := *dec
+	return &decCopy, nil
+}
+
+func (m *MemoryLedger) SaveDecisionIdempotency(ctx context.Context, idempKey string, resp *models.DecisionResponse) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	respCopy := *resp
+	m.cachedDecisions[idempKey] = &respCopy
+	return nil
 }
 
 // Replay wipes all projections and re-applies all events sequentially.
@@ -250,9 +291,16 @@ func (m *MemoryLedger) applyEventToProjections(e *models.LedgerEvent) {
 				proj.Decision = models.DecisionType(dec)
 				if proj.Decision == models.DecisionStepUp {
 					proj.State = "step_up_pending"
+					if token, ok := data["step_up_token"].(string); ok {
+						proj.StepUpToken = token
+					}
 				} else if proj.Decision == models.DecisionBlock {
 					proj.State = "rejected"
 				}
+			}
+		case "payment.step_up_token_issued":
+			if token, ok := data["step_up_token"].(string); ok {
+				proj.StepUpToken = token
 			}
 		case "human.approved":
 			proj.State = "decided"
@@ -356,7 +404,14 @@ func (p *PostgresLedger) migrate() error {
 	);
 
 	CREATE INDEX IF NOT EXISTS idx_events_payment_id ON events(payment_id);
+	CREATE INDEX IF NOT EXISTS idx_events_mandate_id ON events(mandate_id);
 	CREATE INDEX IF NOT EXISTS idx_events_created_at ON events(created_at);
+
+	CREATE TABLE IF NOT EXISTS idempotency_decisions (
+		idempotency_key TEXT PRIMARY KEY,
+		decision JSONB NOT NULL,
+		created_at TIMESTAMP WITH TIME ZONE NOT NULL
+	);
 
 	CREATE TABLE IF NOT EXISTS projections_payments (
 		payment_id TEXT PRIMARY KEY,
@@ -367,6 +422,7 @@ func (p *PostgresLedger) migrate() error {
 		state TEXT,
 		decision TEXT,
 		risk_score REAL,
+		step_up_token TEXT,
 		paypal_order_id TEXT,
 		paypal_auth_id TEXT,
 		paypal_capture_id TEXT,
@@ -409,7 +465,6 @@ func (p *PostgresLedger) AppendEvent(ctx context.Context, event *models.LedgerEv
 		event.CreatedAt,
 	)
 	if err != nil {
-		// PostgreSQL unique constraint violation error code is 23505
 		if isUniqueViolation(err) {
 			return ErrDuplicateEvent
 		}
@@ -460,6 +515,29 @@ func (p *PostgresLedger) GetEventsByPayment(ctx context.Context, paymentID strin
 	return events, nil
 }
 
+func (p *PostgresLedger) GetEventsByMandate(ctx context.Context, mandateID string) ([]models.LedgerEvent, error) {
+	rows, err := p.db.QueryContext(ctx,
+		"SELECT id, type, payment_id, mandate_id, idempotency_key, source, data, created_at FROM events WHERE mandate_id = $1 ORDER BY created_at ASC",
+		mandateID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var events []models.LedgerEvent
+	for rows.Next() {
+		var e models.LedgerEvent
+		var dataStr string
+		if err := rows.Scan(&e.ID, &e.Type, &e.PaymentID, &e.MandateID, &e.IdempotencyKey, &e.Source, &dataStr, &e.CreatedAt); err != nil {
+			return nil, err
+		}
+		e.Data = json.RawMessage(dataStr)
+		events = append(events, e)
+	}
+	return events, nil
+}
+
 func (p *PostgresLedger) ListEvents(ctx context.Context, limit int) ([]models.LedgerEvent, error) {
 	if limit <= 0 {
 		limit = 100
@@ -488,11 +566,11 @@ func (p *PostgresLedger) ListEvents(ctx context.Context, limit int) ([]models.Le
 
 func (p *PostgresLedger) GetPaymentProjection(ctx context.Context, paymentID string) (*models.PaymentProjection, error) {
 	row := p.db.QueryRowContext(ctx,
-		"SELECT payment_id, mandate_id, merchant_id, amount, currency, state, decision, risk_score, paypal_order_id, paypal_auth_id, paypal_capture_id, created_at, updated_at FROM projections_payments WHERE payment_id = $1",
+		"SELECT payment_id, mandate_id, merchant_id, amount, currency, state, decision, risk_score, COALESCE(step_up_token, ''), paypal_order_id, paypal_auth_id, paypal_capture_id, created_at, updated_at FROM projections_payments WHERE payment_id = $1",
 		paymentID,
 	)
 	var pr models.PaymentProjection
-	err := row.Scan(&pr.PaymentID, &pr.MandateID, &pr.MerchantID, &pr.Amount, &pr.Currency, &pr.State, &pr.Decision, &pr.RiskScore, &pr.PayPalOrderID, &pr.PayPalAuthID, &pr.PayPalCaptureID, &pr.CreatedAt, &pr.UpdatedAt)
+	err := row.Scan(&pr.PaymentID, &pr.MandateID, &pr.MerchantID, &pr.Amount, &pr.Currency, &pr.State, &pr.Decision, &pr.RiskScore, &pr.StepUpToken, &pr.PayPalOrderID, &pr.PayPalAuthID, &pr.PayPalCaptureID, &pr.CreatedAt, &pr.UpdatedAt)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
 			return nil, ErrNotFound
@@ -529,6 +607,38 @@ func (p *PostgresLedger) GetTotalSpent(mandateID string) (float64, error) {
 	return strconv.ParseFloat(proj.TotalSpent, 64)
 }
 
+func (p *PostgresLedger) GetDecisionByIdempotencyKey(ctx context.Context, idempKey string) (*models.DecisionResponse, error) {
+	row := p.db.QueryRowContext(ctx,
+		"SELECT decision FROM idempotency_decisions WHERE idempotency_key = $1",
+		idempKey,
+	)
+	var dataStr string
+	err := row.Scan(&dataStr)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return nil, err
+	}
+	var dec models.DecisionResponse
+	if err := json.Unmarshal([]byte(dataStr), &dec); err != nil {
+		return nil, err
+	}
+	return &dec, nil
+}
+
+func (p *PostgresLedger) SaveDecisionIdempotency(ctx context.Context, idempKey string, resp *models.DecisionResponse) error {
+	dataBytes, err := json.Marshal(resp)
+	if err != nil {
+		return err
+	}
+	_, err = p.db.ExecContext(ctx,
+		"INSERT INTO idempotency_decisions (idempotency_key, decision, created_at) VALUES ($1, $2, $3) ON CONFLICT (idempotency_key) DO NOTHING",
+		idempKey, string(dataBytes), time.Now().UTC(),
+	)
+	return err
+}
+
 func (p *PostgresLedger) Replay(ctx context.Context) error {
 	tx, err := p.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -562,9 +672,9 @@ func (p *PostgresLedger) Replay(ctx context.Context) error {
 
 	for _, pr := range mem.paymentProjections {
 		_, err := tx.ExecContext(ctx,
-			`INSERT INTO projections_payments (payment_id, mandate_id, merchant_id, amount, currency, state, decision, risk_score, paypal_order_id, paypal_auth_id, paypal_capture_id, created_at, updated_at)
-			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
-			pr.PaymentID, pr.MandateID, pr.MerchantID, pr.Amount, pr.Currency, pr.State, pr.Decision, pr.RiskScore, pr.PayPalOrderID, pr.PayPalAuthID, pr.PayPalCaptureID, pr.CreatedAt, pr.UpdatedAt,
+			`INSERT INTO projections_payments (payment_id, mandate_id, merchant_id, amount, currency, state, decision, risk_score, step_up_token, paypal_order_id, paypal_auth_id, paypal_capture_id, created_at, updated_at)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+			pr.PaymentID, pr.MandateID, pr.MerchantID, pr.Amount, pr.Currency, pr.State, pr.Decision, pr.RiskScore, pr.StepUpToken, pr.PayPalOrderID, pr.PayPalAuthID, pr.PayPalCaptureID, pr.CreatedAt, pr.UpdatedAt,
 		)
 		if err != nil {
 			return err

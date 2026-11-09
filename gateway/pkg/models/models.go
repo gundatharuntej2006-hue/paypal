@@ -7,22 +7,22 @@ import (
 
 // Mandate represents a cryptographically signed spending mandate from a human principal.
 type Mandate struct {
-	MandateID         string     `json:"mandate_id"`
-	PrincipalID       string     `json:"principal_id"`
-	AgentID           string     `json:"agent_id"`
-	Task              string     `json:"task"`
-	Currency          string     `json:"currency"`
-	MaxTotal          string     `json:"max_total"`
-	MaxPerTxn         string     `json:"max_per_txn"`
-	StepUpOver        string     `json:"step_up_over,omitempty"`
-	AllowedMerchants  []string   `json:"allowed_merchants,omitempty"`
-	AllowedCategories []string   `json:"allowed_categories,omitempty"`
-	ValidFrom         time.Time  `json:"valid_from"`
-	ExpiresAt         time.Time  `json:"expires_at"`
-	Nonce             string     `json:"nonce"`
-	PayPalOrderID     string     `json:"paypal_order_id,omitempty"`
-	PublicKey         string     `json:"public_key"`
-	Signature         string     `json:"signature"`
+	MandateID         string    `json:"mandate_id"`
+	PrincipalID       string    `json:"principal_id"`
+	AgentID           string    `json:"agent_id"`
+	Task              string    `json:"task"`
+	Currency          string    `json:"currency"`
+	MaxTotal          string    `json:"max_total"`
+	MaxPerTxn         string    `json:"max_per_txn"`
+	StepUpOver        string    `json:"step_up_over,omitempty"`
+	AllowedMerchants  []string  `json:"allowed_merchants,omitempty"`
+	AllowedCategories []string  `json:"allowed_categories,omitempty"`
+	ValidFrom         time.Time `json:"valid_from"`
+	ExpiresAt         time.Time `json:"expires_at"`
+	Nonce             string    `json:"nonce"`
+	PayPalOrderID     string    `json:"paypal_order_id,omitempty"`
+	PublicKey         string    `json:"public_key"`
+	Signature         string    `json:"signature"`
 }
 
 // Item represents a single line item in an intent proposal.
@@ -64,6 +64,11 @@ type PaymentIntentRequest struct {
 	AgentReasoning string          `json:"agent_reasoning"`
 	SourceContexts []SourceContext `json:"source_contexts,omitempty"`
 	IdempotencyKey string          `json:"idempotency_key"`
+}
+
+// StepUpApprovalRequest is sent to approve a step-up payment.
+type StepUpApprovalRequest struct {
+	StepUpToken string `json:"step_up_token"`
 }
 
 // DecisionType represents allow, step_up, or block.
@@ -135,6 +140,7 @@ type PaymentProjection struct {
 	State           string       `json:"state"`
 	Decision        DecisionType `json:"decision"`
 	RiskScore       float64      `json:"risk_score"`
+	StepUpToken     string       `json:"step_up_token,omitempty"`
 	PayPalOrderID   string       `json:"paypal_order_id,omitempty"`
 	PayPalAuthID    string       `json:"paypal_auth_id,omitempty"`
 	PayPalCaptureID string       `json:"paypal_capture_id,omitempty"`

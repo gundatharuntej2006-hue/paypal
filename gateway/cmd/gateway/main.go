@@ -40,9 +40,12 @@ func main() {
 	}
 	defer led.Close()
 
-	// 2. Initialize Mandate Verifier & Nonce Store
+	// 2. Initialize Mandate Verifier, Nonce Store & Principal Registry (Fix 2)
 	nonceStore := mandate.NewMemoryNonceStore()
-	verifier := mandate.NewVerifier(nonceStore, led)
+	principalRegistry := mandate.NewMemoryPrincipalRegistry()
+	// In dev mode, lenient registry allows self-registration or seeded keys
+	verifier := mandate.NewVerifier(nonceStore, led, principalRegistry)
+	verifier.SetStrictRegistry(cfg.Env == "production")
 
 	// 3. Initialize State Machine
 	sm := statemachine.NewStateMachine()
