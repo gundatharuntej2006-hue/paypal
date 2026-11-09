@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PaymentIntentRequest",
+  "description": "Payment authorization request sent by an AI shopping agent to the AgentGuard Gateway.",
+  "type": "object",
+  "required": [
+    "mandate",
+    "merchant_id",
+    "amount",
+    "currency",
+    "items",
+    "agent_reasoning",
+    "idempotency_key"
+  ],
+  "properties": {
+    "mandate": {
+      "$ref": "./mandate.schema.json"
+    },
+    "merchant_id": {
+      "type": "string",
+      "description": "Identifier of the merchant being paid"
+    },
+    "merchant_name": {
+      "type": "string",
+      "description": "Display name of the merchant"
+    },
+    "amount": {
+      "type": "string",
+      "pattern": "^\\d+(\\.\\d{1,2})?$",
+      "description": "Total payment amount requested (e.g. 29.99)"
+    },
+    "currency": {
+      "type": "string",
+      "pattern": "^[A-Z]{3}$",
+      "description": "Currency code matching mandate currency"
+    },
+    "category": {
+      "type": "string",
+      "description": "Declared product/service category"
+    },
+    "items": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["name", "qty", "unit_price"],
+        "properties": {
+          "name": { "type": "string" },
+          "qty": { "type": "integer", "minimum": 1 },
+          "unit_price": { "type": "string", "pattern": "^\\d+(\\.\\d{1,2})?$" },
+          "category": { "type": "string" }
+        }
+      }
+    },
+    "agent_reasoning": {
+      "type": "string",
+      "description": "Agent's reasoning trace explaining why this purchase serves the task"
+    },
+    "source_contexts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["ref", "text"],
+        "properties": {
+          "ref": { "type": "string" },
+          "kind": { "type": "string", "enum": ["html", "text", "review", "email", "invoice", "tool_output"] },
+          "url": { "type": "string" },
+          "text": { "type": "string" },
+          "html": { "type": "string" }
+        }
+      }
+    },
+    "idempotency_key": {
+      "type": "string",
+      "description": "Client-generated UUID preventing duplicate requests on agent retry"
+    }
+  }
+}

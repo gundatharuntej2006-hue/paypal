@@ -4,3 +4,9 @@ __pycache__/
 *.egg-info/
 .venv/
 .env
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.db

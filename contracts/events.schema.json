@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LedgerEvent",
+  "description": "Immutable event-sourced ledger event for AgentGuard audit trail.",
+  "type": "object",
+  "required": [
+    "id",
+    "type",
+    "source",
+    "created_at",
+    "data"
+  ],
+  "properties": {
+    "id": {
+      "type": "string",
+      "description": "Unique event ID (e.g. evt_5012)"
+    },
+    "type": {
+      "type": "string",
+      "enum": [
+        "intent.received",
+        "mandate.verified",
+        "mandate.failed",
+        "scan.completed",
+        "judge.completed",
+        "risk.scored",
+        "decision.made",
+        "human.approved",
+        "human.rejected",
+        "paypal.order_created",
+        "paypal.authorized",
+        "paypal.captured",
+        "paypal.voided",
+        "paypal.refunded",
+        "webhook.received",
+        "webhook.rejected",
+        "reconciliation.mismatch"
+      ]
+    },
+    "payment_id": {
+      "type": ["string", "null"],
+      "description": "Associated payment ID"
+    },
+    "mandate_id": {
+      "type": ["string", "null"],
+      "description": "Associated mandate ID"
+    },
+    "idempotency_key": {
+      "type": ["string", "null"],
+      "description": "Unique deduplication key"
+    },
+    "source": {
+      "type": "string",
+      "description": "Origin component (gateway, intel, webhook, manual)"
+    },
+    "data": {
+      "type": "object",
+      "description": "Structured payload for this specific event type"
+    },
+    "created_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC 3339 timestamp"
+    }
+  }
+}

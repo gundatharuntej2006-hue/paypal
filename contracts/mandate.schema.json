@@ -1,0 +1,94 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Mandate",
+  "description": "Cryptographically signed spending mandate issued by a human principal.",
+  "type": "object",
+  "required": [
+    "mandate_id",
+    "principal_id",
+    "agent_id",
+    "task",
+    "currency",
+    "max_total",
+    "max_per_txn",
+    "valid_from",
+    "expires_at",
+    "nonce",
+    "public_key",
+    "signature"
+  ],
+  "properties": {
+    "mandate_id": {
+      "type": "string",
+      "description": "Unique identifier for the mandate (e.g. mdt_001)"
+    },
+    "principal_id": {
+      "type": "string",
+      "description": "Identity of the human authorizer (e.g. user_123)"
+    },
+    "agent_id": {
+      "type": "string",
+      "description": "Authorized agent ID that can present this mandate"
+    },
+    "task": {
+      "type": "string",
+      "description": "Human instructions specifying the approved scope of spending"
+    },
+    "currency": {
+      "type": "string",
+      "pattern": "^[A-Z]{3}$",
+      "description": "ISO 4217 three-letter currency code (e.g. USD)"
+    },
+    "max_total": {
+      "type": "string",
+      "pattern": "^\\d+(\\.\\d{1,2})?$",
+      "description": "Maximum cumulative amount the agent is allowed to spend"
+    },
+    "max_per_txn": {
+      "type": "string",
+      "pattern": "^\\d+(\\.\\d{1,2})?$",
+      "description": "Maximum amount allowed in any single transaction"
+    },
+    "step_up_over": {
+      "type": ["string", "null"],
+      "pattern": "^\\d+(\\.\\d{1,2})?$",
+      "description": "Transactions over this amount require human step-up approval"
+    },
+    "allowed_merchants": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "List of approved merchant IDs or names"
+    },
+    "allowed_categories": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "List of approved purchase category codes"
+    },
+    "valid_from": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC 3339 timestamp marking start of validity"
+    },
+    "expires_at": {
+      "type": "string",
+      "format": "date-time",
+      "description": "RFC 3339 timestamp after which payments are rejected"
+    },
+    "nonce": {
+      "type": "string",
+      "description": "Unique random string preventing mandate replay"
+    },
+    "paypal_order_id": {
+      "type": ["string", "null"],
+      "description": "PayPal sandbox order ID holding authorization reserve"
+    },
+    "public_key": {
+      "type": "string",
+      "description": "Base64-encoded Ed25519 public key of the principal"
+    },
+    "signature": {
+      "type": "string",
+      "description": "Base64-encoded Ed25519 signature over canonical mandate fields"
+    }
+  }
+}

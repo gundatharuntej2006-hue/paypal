@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "DecisionResponse",
+  "description": "Multi-layer firewall verdict returned to the agent and recorded in the ledger.",
+  "type": "object",
+  "required": [
+    "payment_id",
+    "decision",
+    "risk_score",
+    "reasons",
+    "checks",
+    "audit_event_id"
+  ],
+  "properties": {
+    "payment_id": {
+      "type": "string",
+      "description": "Internal tracking ID for this payment intent (e.g. pay_881)"
+    },
+    "decision": {
+      "type": "string",
+      "enum": ["allow", "step_up", "block"],
+      "description": "Final gate verdict"
+    },
+    "risk_score": {
+      "type": "number",
+      "minimum": 0.0,
+      "maximum": 1.0,
+      "description": "Aggregated risk score between 0.0 (safe) and 1.0 (dangerous)"
+    },
+    "reasons": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Explanations for the decision (e.g. mandate_valid, intent_aligned, no_injection)"
+    },
+    "checks": {
+      "type": "object",
+      "required": ["mandate", "injection", "intent", "risk"],
+      "properties": {
+        "mandate": { "type": "string", "enum": ["pass", "fail"] },
+        "injection": { "type": "string", "enum": ["pass", "flagged", "unknown"] },
+        "intent": { "type": "string", "enum": ["pass", "flagged", "unknown"] },
+        "risk": { "type": "string", "enum": ["pass", "flagged", "unknown"] }
+      }
+    },
+    "paypal": {
+      "type": ["object", "null"],
+      "properties": {
+        "order_id": { "type": "string" },
+        "authorization_id": { "type": "string" },
+        "capture_id": { "type": "string" },
+        "approval_url": { "type": "string" }
+      }
+    },
+    "step_up_token": {
+      "type": ["string", "null"],
+      "description": "Token for human approval if decision is step_up"
+    },
+    "audit_event_id": {
+      "type": "string",
+      "description": "Ledger event ID for the decision event"
+    }
+  }
+}
