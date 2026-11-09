@@ -29,7 +29,7 @@ On a fresh machine, install first: `pip install -e ".[dev]"`
 | `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET` | none | Sandbox app credentials (needed for postback verification) |
 | `PAYPAL_WEBHOOK_ID` | none | The ID PayPal shows for our webhook. Use `WEBHOOK_ID` for simulator events |
 | `PAYPAL_WEBHOOK_VERIFY` | `postback` | `postback` asks PayPal's verification API. `local` checks the signature ourselves, which also works for simulator events |
-| `LEDGER_URL`, `LEDGER_TOKEN` | none | The gateway's internal event hook. Without it, events stay in memory (development only) |
+| `LEDGER_URL`, `LEDGER_TOKEN` | none | The gateway's internal event hook: a full URL, or a bare Render `host:port` (then `http://` and `/internal/ledger/events` are added). Without it, events stay in memory (development only) |
 
 ## PayPal webhooks
 

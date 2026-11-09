@@ -3,10 +3,8 @@ import json
 
 import jsonschema
 import pytest
-from fastapi.testclient import TestClient
 
 from intel import llm, samples
-from intel.config import Settings, get_settings
 from intel.export_contracts import CONTRACTS_DIR, schemas
 from intel.main import app, run_signal
 from intel.models import ScanResponse
@@ -17,19 +15,6 @@ ENDPOINTS = [
     ("/risk/score", "risk_score", samples.RISK_FIRST),
 ]
 
-
-@pytest.fixture
-def client_for():
-    def make(**overrides):
-        values = dict(
-            mode="stub", api_token=None, anthropic_api_key=None, scan_model="m", judge_model="m", deadline_s=2.5
-        )
-        values.update(overrides)
-        app.dependency_overrides[get_settings] = lambda: Settings(**values)
-        return TestClient(app)
-
-    yield make
-    app.dependency_overrides.clear()
 
 
 @pytest.mark.parametrize("path,name,body", ENDPOINTS)

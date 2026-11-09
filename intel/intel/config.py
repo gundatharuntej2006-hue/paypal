@@ -34,6 +34,16 @@ def _choice(name: str, default: str, allowed: tuple[str, ...]) -> str:
     return value
 
 
+LEDGER_PATH = "/internal/ledger/events"
+
+
+def _ledger_url(value: str | None) -> str | None:
+    """Accept a full URL, or a bare Render host[:port] (render.yaml fromService gives no scheme or path)."""
+    if not value:
+        return None
+    return value if "://" in value else f"http://{value.strip('/')}{LEDGER_PATH}"
+
+
 @lru_cache
 def get_settings() -> Settings:
     env = os.environ.get
@@ -49,6 +59,6 @@ def get_settings() -> Settings:
         paypal_client_secret=env("PAYPAL_CLIENT_SECRET") or None,
         paypal_webhook_id=env("PAYPAL_WEBHOOK_ID") or None,
         webhook_verify=_choice("PAYPAL_WEBHOOK_VERIFY", "postback", ("postback", "local")),  # type: ignore[arg-type]
-        ledger_url=env("LEDGER_URL") or None,
+        ledger_url=_ledger_url(env("LEDGER_URL")),
         ledger_token=env("LEDGER_TOKEN") or None,
     )
