@@ -2,10 +2,12 @@
 
 import argparse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from urllib.parse import urlsplit
+from urllib.parse import parse_qs, urlsplit
 
 from .data import get_merchant, get_product
 from . import rendering
+from ..attacks.fixtures import get_attack
+from ..attacks.poisoning import poisoned_detail
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8010
@@ -13,7 +15,8 @@ DEFAULT_PORT = 8010
 
 class MerchantHandler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:
-        path = urlsplit(self.path).path
+        parsed_url = urlsplit(self.path)
+        path = parsed_url.path
         if path == "/health":
             self.respond(200, '{"status":"ok"}', "application/json")
             return
@@ -32,6 +35,18 @@ class MerchantHandler(BaseHTTPRequestHandler):
             if parts[2] == "products":
                 product = get_product(merchant, parts[3])
                 if product is not None:
+                    query = parse_qs(parsed_url.query, keep_blank_values=True)
+                    if "attack" in query:
+                        ids = query["attack"]
+                        if len(ids) != 1 or not ids[0]:
+                            self.respond(400, rendering.page("Bad request", "<h1>Supply one nonempty attack ID</h1>"))
+                            return
+                        attack = get_attack(ids[0])
+                        if attack is None or (attack.merchant_id, attack.product_id) != (merchant.merchant_id, product.product_id):
+                            self.respond(404, rendering.page("Not found", "<h1>Attack variant not found for this product</h1>"))
+                            return
+                        self.respond(200, poisoned_detail(merchant, product, attack))
+                        return
                     self.respond(200, rendering.detail(merchant, product))
                     return
                 self.respond(404, rendering.page("Not found", "<h1>Product not found</h1>"))

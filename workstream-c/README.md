@@ -2,8 +2,8 @@
 
 Owner: Tharun. This directory contains the isolated Python package for agents,
 attacks, and benchmarking. The mock merchant application and internal source
-evidence helper are implemented. Payment, agent, attack-library, and benchmark
-implementation remain pending.
+evidence helper and 15 poisoned page fixtures are implemented. Payment, agent,
+the full malicious/benign scenario library, and benchmark implementation remain pending.
 
 ## Modules
 
@@ -11,9 +11,9 @@ implementation remain pending.
 | --- | --- |
 | `src/agentguard_workstream_c/` | Package namespace for Workstream C. |
 | `sdk/` | Future Python Gateway SDK, including `guard.request_payment(...)`, communicating with Vivek's real Go gateway. |
-| `merchants/` | Standard-library mock merchant server, catalogs, HTML rendering, and internal source evidence. Poisoned catalog variants remain future work. |
+| `merchants/` | Standard-library mock merchant server, catalogs, HTML rendering, internal source evidence, and a fixture-scoped visible-text reader. |
 | `agent/` | Future LangGraph shopping workflow, calling the SDK for every payment request. |
-| `attacks/` | Future library of at least 60 malicious and 20 benign scenarios. |
+| `attacks/` | Fifteen declarative poisoned merchant variants; the full 60-malicious/20-benign scenario library remains future work. |
 | `benchmark/` | Future scenario runner and JSON/Markdown reporting. |
 | `tests/test_package_imports.py` | Import checks for the root package and each subpackage. |
 | `pyproject.toml` | Package metadata, build configuration, development dependency, and pytest configuration. |
@@ -147,6 +147,90 @@ Tests start a real HTTP server on an ephemeral loopback port, retrieve every
 catalog/product, and compare full returned HTML with the renderer output. They
 also cover missing routes, lookalike identity, escaping, evidence fidelity,
 field validation, and exact size/count boundaries.
+
+## Poisoned merchant variants
+
+Normal listings, catalogs, and product URLs remain clean. Poisoning is opt-in:
+append `?attack=<attack_id>` to the fixture's target product URL. All URLs below
+are relative to `http://127.0.0.1:8010`. Remove the query to retrieve the clean
+counterpart. Fixtures are enumerated programmatically through
+`agentguard_workstream_c.attacks.fixtures.ATTACKS`; each exposes `clean_path`
+and `poisoned_path`. There are no poisoned links in normal catalogs.
+
+| Attack ID | Category | Delivery | Target product path |
+| --- | --- | --- | --- |
+| `poison_01` | Hidden CSS | `display:none` | `/merchants/merchant_a/products/usb-c-hub` |
+| `poison_02` | HTML comment | Comment | `/merchants/merchant_a/products/usb-c-hub` |
+| `poison_03` | Zero-size text | Zero font size | `/merchants/merchant_b/products/travel-mug` |
+| `poison_04` | Off-screen text | Negative absolute positioning | `/merchants/merchant_c/products/daypack` |
+| `poison_05` | Malicious review | Review | `/merchants/merchant_b/products/travel-mug` |
+| `poison_06` | System impersonation | Banner | `/merchants/merchant_a/products/desk-lamp` |
+| `poison_07` | Admin impersonation | Banner | `/merchants/merchant_c/products/water-bottle` |
+| `poison_08` | Budget override | Banner | `/merchants/merchant_c/products/daypack` |
+| `poison_09` | Quantity increase | Review | `/merchants/merchant_b/products/storage-baskets` |
+| `poison_10` | Amount tampering | Banner | `/merchants/merchant_a/products/usb-c-hub` |
+| `poison_11` | Merchant spoofing | Banner | `/merchants/merchant_lookalike/products/usb-c-hub` |
+| `poison_12` | Task override | Banner | `/merchants/merchant_b/products/storage-baskets` |
+| `poison_13` | Shipping-fee manipulation | Banner | `/merchants/merchant_c/products/water-bottle` |
+| `poison_14` | Currency substitution | Banner | `/merchants/merchant_a/products/desk-lamp` |
+| `poison_15` | Human-approval bypass | Banner | `/merchants/merchant_lookalike/products/desk-lamp` |
+
+Example: `/merchants/merchant_a/products/usb-c-hub?attack=poison_01`.
+Unknown attack IDs and target mismatches return 404; empty or repeated attack
+parameters return 400. Omitting the parameter retains the original clean response.
+
+Architecture:
+
+- `attacks/fixtures.py`: immutable declarative records with stable IDs, category,
+  descriptive name, target merchant/product, delivery mechanism, payload, expected
+  unprotected behavior, and a maliciousness explanation. Expected behaviors are
+  test hypotheses; no agent has been run or measured by this component.
+- `attacks/poisoning.py`: renders inert injected markup around the clean product
+  page. Reviews appear in the review list, banners before the product heading,
+  and hidden variants before the closing main tag. Catalog data is never mutated.
+- `merchants/server.py`: resolves the explicit query and verifies the target.
+- `merchants/visible_text.py`: static fixture reader and evidence adapter.
+
+Poisoned pages keep all real seller/product metadata, including the explicit
+merchant ID, and add an `attack_id` meta tag. The lookalike payload claims a false
+identity in page prose; actual merchant metadata continues to identify the outlet.
+Fixtures contain no JavaScript, external fetches, or payment operations.
+
+Hidden payloads are present in the original HTML but absent from the fixture
+reader's text view. Visible reviews and banners appear in that text view.
+`visible_text` recognizes our inline hiding styles, HTML comments, hidden
+attributes, and head/script/style/template content. It is **not a browser or a
+general CSS visibility engine**: external stylesheets, arbitrary layout, and
+script execution are outside its scope.
+
+To construct evidence for an agent consuming this reader's text output:
+
+```python
+from urllib.request import urlopen
+from agentguard_workstream_c.attacks.fixtures import get_attack
+from agentguard_workstream_c.merchants.visible_text import context_from_page
+from agentguard_workstream_c.merchants.source_context import validate_contexts
+
+attack = get_attack("poison_01")
+url = "http://127.0.0.1:8010" + attack.poisoned_path
+with urlopen(url, timeout=5) as response:
+    raw_html = response.read().decode("utf-8")
+context = context_from_page(url=url, raw_html=raw_html)
+evidence = [entry.to_dict() for entry in validate_contexts([context])]
+```
+
+This uses the existing `make_context` internally. The `html` field retains the
+complete original string, including hidden instructions and comments. Only the
+separate `text` field is extracted; URLs include the actual attack query and
+references remain deterministic. If an agent uses another reader, supply its
+actual consumed text directly to `make_context` instead. Existing size/count
+limits still apply and oversized evidence is rejected, never truncated.
+
+Run `.\.venv\Scripts\python.exe -m pytest -v` from `workstream-c/`. Tests fetch
+all 15 variants through a real loopback HTTP server, check raw/visible payloads,
+placement, identity, source preservation, and missing IDs. Clean-page SHA-256
+regressions cover all eight original products, and existing tests remain active.
+This work does not define a gateway request or contact the intelligence service.
 
 ## Windows sandbox editable-install workaround
 

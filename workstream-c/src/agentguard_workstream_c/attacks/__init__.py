@@ -1,1 +1,1 @@
-"""Future malicious and benign scenarios for evaluating payment-agent behavior."""
+"""Declarative poisoned merchant fixtures for controlled prompt-injection tests."""
