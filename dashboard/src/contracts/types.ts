@@ -1,29 +1,91 @@
-import type mandate from '../../../contracts/mandate.json';
-import type paymentIntent from '../../../contracts/payment-intent-request.json';
-import type decisionResponse from '../../../contracts/decision-response.json';
-import type scanContent from '../../../contracts/scan-content.json';
-import type judgeIntent from '../../../contracts/judge-intent.json';
-import type riskScore from '../../../contracts/risk-score.json';
-import type eventEnvelope from '../../../contracts/event-envelope.json';
+// Mirrors the examples in /contracts. Render builds this app from /dashboard.
+export interface Mandate {
+  mandate_id: string;
+  principal_id: string;
+  agent_id: string;
+  task: string;
+  currency: string;
+  max_total: string;
+  max_per_txn: string;
+  step_up_over: string;
+  allowed_merchants: string[];
+  allowed_categories: string[];
+  valid_from: string;
+  expires_at: string;
+  nonce: string;
+  paypal_order_id: string;
+  signature: string;
+}
 
-export type Mandate = typeof mandate;
-export type PaymentIntentRequest = typeof paymentIntent;
+interface PurchaseProposal {
+  merchant_id: string;
+  amount: string;
+  currency: string;
+  items: { name: string; qty: number; unit_price: string }[];
+}
+
+interface SourceContext {
+  ref: string;
+  text: string;
+}
+
+export interface PaymentIntentRequest extends PurchaseProposal {
+  mandate: Mandate;
+  agent_reasoning: string;
+  source_contexts: SourceContext[];
+  idempotency_key: string;
+}
+
 export type Decision = 'allow' | 'step_up' | 'block';
-export type DecisionResponse = Omit<typeof decisionResponse, 'decision' | 'paypal'> & {
-  decision: Decision;
-  paypal?: Partial<typeof decisionResponse.paypal>;
-};
 
-export type ScanContentRequest = typeof scanContent.request;
-export type ScanContentResponse = Omit<typeof scanContent.response, 'snippets'> & {
+export interface DecisionResponse {
+  payment_id: string;
+  decision: Decision;
+  risk_score: number;
+  reasons: string[];
+  checks: Record<'mandate' | 'injection' | 'intent' | 'risk', string>;
+  paypal?: {
+    order_id?: string;
+    authorization_id?: string;
+    capture_id?: string;
+  };
+  audit_event_id: string;
+}
+
+export interface ScanContentRequest {
+  contexts: SourceContext[];
+}
+
+export interface ScanContentResponse {
+  injection_suspected: boolean;
+  confidence: number;
   snippets: string[];
-};
-export type JudgeIntentRequest = typeof judgeIntent.request;
-export type JudgeIntentResponse = typeof judgeIntent.response;
-export type RiskScoreRequest = Omit<typeof riskScore.request, 'history'> & {
+}
+
+export interface JudgeIntentRequest {
+  task: string;
+  mandate: Mandate;
+  proposal: PurchaseProposal;
+  reasoning: string;
+}
+
+export interface JudgeIntentResponse {
+  aligned: boolean;
+  confidence: number;
+  rationale: string;
+  influenced_by_external: boolean;
+}
+
+export interface RiskScoreRequest {
+  mandate: Mandate;
+  proposal: PurchaseProposal;
   history: unknown[];
-};
-export type RiskScoreResponse = typeof riskScore.response;
+}
+
+export interface RiskScoreResponse {
+  score: number;
+  factors: string[];
+}
 
 export type EventType =
   | 'intent.received'
@@ -43,7 +105,11 @@ export type EventType =
   | 'webhook.received'
   | 'reconciliation.mismatch';
 
-export type EventEnvelope = Omit<typeof eventEnvelope, 'type' | 'payload'> & {
+export interface EventEnvelope {
+  id: string;
   type: EventType;
+  payment_id: string;
+  mandate_id: string;
+  ts: string;
   payload: Record<string, unknown>;
-};
+}

@@ -1,0 +1,68 @@
+services:
+  - type: web
+    name: agentguard-gateway
+    runtime: go
+    branch: ritika
+    rootDir: gateway
+    plan: free
+    buildCommand: mkdir -p bin && go build -o bin/gateway .
+    startCommand: ./bin/gateway
+    healthCheckPath: /health
+    envVars:
+      - key: DATABASE_URL
+        fromDatabase:
+          name: agentguard-db
+          property: connectionString
+      - key: INTELLIGENCE_HOSTPORT
+        fromService:
+          type: web
+          name: agentguard-intelligence
+          property: hostport
+      - key: PAYPAL_BASE_URL
+        value: https://api-m.sandbox.paypal.com
+      - key: PAYPAL_CLIENT_ID
+        sync: false
+      - key: PAYPAL_CLIENT_SECRET
+        sync: false
+      - key: PAYPAL_WEBHOOK_ID
+        sync: false
+      - key: MANDATE_PUBLIC_KEY
+        sync: false
+      - key: MANDATE_PRIVATE_KEY
+        sync: false
+
+  - type: web
+    name: agentguard-intelligence
+    runtime: python
+    branch: ritika
+    rootDir: intelligence
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: LLM_API_KEY
+        sync: false
+
+  - type: web
+    name: agentguard-dashboard
+    runtime: static
+    branch: ritika
+    rootDir: dashboard
+    buildCommand: npm ci && npm run build
+    staticPublishPath: dist
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
+    envVars:
+      - key: VITE_GATEWAY_URL
+        fromService:
+          type: web
+          name: agentguard-gateway
+          envVarKey: RENDER_EXTERNAL_URL
+
+databases:
+  - name: agentguard-db
+    plan: free
+    ipAllowList: []
