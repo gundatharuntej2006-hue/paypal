@@ -1,0 +1,15 @@
+{
+  "request": {
+    "contexts": [
+      {
+        "ref": "page_17",
+        "text": "USB-C hub with seven ports."
+      }
+    ]
+  },
+  "response": {
+    "injection_suspected": false,
+    "confidence": 0.98,
+    "snippets": []
+  }
+}

@@ -1,0 +1,22 @@
+{
+  "payment_id": "pay_881",
+  "decision": "allow",
+  "risk_score": 0.12,
+  "reasons": [
+    "mandate_valid",
+    "intent_aligned",
+    "no_injection"
+  ],
+  "checks": {
+    "mandate": "pass",
+    "injection": "pass",
+    "intent": "pass",
+    "risk": "pass"
+  },
+  "paypal": {
+    "order_id": "5O190127TN364715T",
+    "authorization_id": "example-authorization",
+    "capture_id": "example-capture"
+  },
+  "audit_event_id": "evt_5012"
+}
