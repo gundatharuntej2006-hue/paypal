@@ -1,0 +1,106 @@
+services:
+  # -------------------------------------------------------------
+  # 1. AgentGuard Core Gateway (Go) - Workstream A (Vivek)
+  # -------------------------------------------------------------
+  - type: web
+    name: agentguard-gateway
+    runtime: go
+    rootDir: gateway
+    plan: standard
+    buildCommand: go build -o bin/gateway ./cmd/gateway/main.go
+    startCommand: ./bin/gateway
+    healthCheckPath: /health
+    envVars:
+      - key: PORT
+        value: 8080
+      - key: ENV
+        value: production
+      - key: DB_DRIVER
+        value: postgres
+      - key: DATABASE_URL
+        fromDatabase:
+          name: agentguard-postgres
+          property: connectionString
+      - key: INTEL_SERVICE_URL
+        fromService:
+          type: web
+          name: agentguard-intel
+          property: host
+      - key: INTEL_TIMEOUT_MS
+        value: 3000
+      - key: INTERNAL_LEDGER_TOKEN
+        generateValue: true
+      - key: RISK_THRESHOLD_BLOCK
+        value: "0.65"
+      - key: RISK_THRESHOLD_STEPUP
+        value: "0.35"
+      - key: PAYPAL_ENV
+        value: sandbox
+      - key: PAYPAL_CLIENT_ID
+        sync: false
+      - key: PAYPAL_CLIENT_SECRET
+        sync: false
+      - key: PAYPAL_MOCK_MODE
+        value: "false"
+
+  # -------------------------------------------------------------
+  # 2. Intelligence Service (FastAPI) - Workstream B (Atul)
+  # -------------------------------------------------------------
+  - type: web
+    name: agentguard-intel
+    runtime: python
+    rootDir: intel
+    plan: standard
+    buildCommand: pip install -e .
+    startCommand: uvicorn intel.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: INTEL_MODE
+        value: production
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: LEDGER_URL
+        fromService:
+          type: web
+          name: agentguard-gateway
+          property: host
+      - key: LEDGER_TOKEN
+        fromService:
+          type: web
+          name: agentguard-gateway
+          envVarKey: INTERNAL_LEDGER_TOKEN
+      - key: PAYPAL_WEBHOOK_ID
+        sync: false
+
+  # -------------------------------------------------------------
+  # 3. Web Dashboard (React + AG Grid) - Workstream D (Rikita)
+  # -------------------------------------------------------------
+  - type: web
+    name: agentguard-dashboard
+    runtime: node
+    rootDir: dashboard
+    plan: standard
+    buildCommand: npm install && npm run build
+    startCommand: npx serve -s dist -l $PORT
+    envVars:
+      - key: VITE_GATEWAY_URL
+        fromService:
+          type: web
+          name: agentguard-gateway
+          property: host
+      - key: VITE_INTEL_URL
+        fromService:
+          type: web
+          name: agentguard-intel
+          property: host
+
+databases:
+  # -------------------------------------------------------------
+  # PostgreSQL Event-Sourced Ledger Store
+  # -------------------------------------------------------------
+  - name: agentguard-postgres
+    plan: standard
+    databaseName: agentguard
+    user: agentguard
