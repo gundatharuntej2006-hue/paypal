@@ -57,9 +57,12 @@ func main() {
 	}
 	decisionEngine := policy.NewDecisionEngine(decConfig)
 
-	// 5. Initialize PayPal Client
+	// 5. Initialize PayPal Client (with guaranteed payment-incapable mode support)
 	var ppClient paypal.Client
-	if cfg.PayPalMockMode {
+	if cfg.GatewayMode == "dryrun" {
+		log.Printf("[gateway] 🔒 GATEWAY MODE: DRY-RUN (payment-incapable, zero funds movement guaranteed)")
+		ppClient = paypal.NewDryRunClient()
+	} else if cfg.PayPalMockMode {
 		log.Printf("[gateway] PayPal running in MOCK mode (no live sandbox credentials needed)")
 		ppClient = paypal.NewMockClient()
 	} else {

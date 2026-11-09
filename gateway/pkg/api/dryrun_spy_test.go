@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -395,5 +396,167 @@ func TestMerchantPayeeBindingLiveMode(t *testing.T) {
 	if spy.CreateOrderCalls != 1 || spy.AuthorizeOrderCalls != 1 || spy.CaptureCalls != 1 {
 		t.Fatalf("expected 1 CreateOrder, 1 Authorize, 1 Capture, got: Create=%d, Auth=%d, Cap=%d",
 			spy.CreateOrderCalls, spy.AuthorizeOrderCalls, spy.CaptureCalls)
+	}
+}
+
+// Test 6: Failure Injection in Dry-Run Mode asserts proper error return and zero live calls
+func TestDryRunSpy_FailureInjection(t *testing.T) {
+	server, spy, verifier, _, handler := setupSpyTestServer(t)
+
+	// Inject error in dry-run client
+	dryClient := paypal.NewDryRunClient()
+	dryClient.InjectCaptureError(errors.New("simulated payment network outage"))
+	server.SetDryRunClient(dryClient)
+
+	m := helperCreateSignedMandate(t, nil)
+	verifier.RegisterPrincipal(m.PrincipalID, m.PublicKey)
+
+	reqPayload := models.PaymentIntentRequest{
+		Mandate:        m,
+		AgentID:        m.AgentID,
+		MerchantID:     "merchant_staples",
+		Amount:         "29.98",
+		Currency:       "USD",
+		Category:       "office_supplies",
+		Items:          []models.Item{{Name: "Paper Ream", Qty: 2, UnitPrice: "14.99"}},
+		AgentReasoning: "Failure injection test",
+		IdempotencyKey: "dryrun_fail_injection_001",
+		DryRun:         true,
+	}
+
+	body, _ := json.Marshal(reqPayload)
+	req := httptest.NewRequest(http.MethodPost, "/v1/payments/intents", bytes.NewBuffer(body))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	// Should report 502 Bad Gateway
+	if w.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502 Bad Gateway on injected failure, got %d", w.Code)
+	}
+
+	// CRITICAL: Live PayPal client must still have 0 calls
+	if spy.TotalCalls() != 0 {
+		t.Fatalf("VIOLATION: spy recorded %d calls on injected dry-run failure", spy.TotalCalls())
+	}
+}
+
+// Test 7: Concurrent Approval Attempts: Atomic step-up token consumption allows exactly 1 approval
+func TestDryRunSpy_ConcurrentApprovals(t *testing.T) {
+	_, spy, verifier, _, handler := setupSpyTestServer(t)
+
+	m := helperCreateSignedMandate(t, nil)
+	verifier.RegisterPrincipal(m.PrincipalID, m.PublicKey)
+
+	// Create step-up payment
+	reqPayload := models.PaymentIntentRequest{
+		Mandate:        m,
+		AgentID:        m.AgentID,
+		MerchantID:     "merchant_staples",
+		Amount:         "49.98",
+		Currency:       "USD",
+		Category:       "office_supplies",
+		Items:          []models.Item{{Name: "Desk Lamp", Qty: 2, UnitPrice: "24.99"}},
+		AgentReasoning: "Step-up concurrent test",
+		IdempotencyKey: "concurrent_stepup_idemp",
+		DryRun:         true,
+	}
+
+	body, _ := json.Marshal(reqPayload)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/v1/payments/intents", bytes.NewBuffer(body)))
+
+	var dec models.DecisionResponse
+	_ = json.Unmarshal(w.Body.Bytes(), &dec)
+	if dec.StepUpToken == "" {
+		t.Fatalf("expected step_up_token")
+	}
+
+	// Fire 10 concurrent approval requests simultaneously
+	concurrency := 10
+	results := make(chan int, concurrency)
+	for i := 0; i < concurrency; i++ {
+		go func() {
+			apprBody, _ := json.Marshal(models.StepUpApprovalRequest{StepUpToken: dec.StepUpToken})
+			apprReq := httptest.NewRequest(http.MethodPost, "/v1/payments/"+dec.PaymentID+"/approve", bytes.NewBuffer(apprBody))
+			apprW := httptest.NewRecorder()
+			handler.ServeHTTP(apprW, apprReq)
+			results <- apprW.Code
+		}()
+	}
+
+	successCount := 0
+	conflictCount := 0
+	for i := 0; i < concurrency; i++ {
+		code := <-results
+		if code == http.StatusOK {
+			successCount++
+		} else if code == http.StatusConflict {
+			conflictCount++
+		}
+	}
+
+	// Exactly 1 must succeed, exactly 9 must receive 409 Conflict
+	if successCount != 1 {
+		t.Fatalf("expected exactly 1 successful approval, got %d", successCount)
+	}
+	if conflictCount != concurrency-1 {
+		t.Fatalf("expected %d conflicts, got %d", concurrency-1, conflictCount)
+	}
+
+	// Live PayPal client calls must be 0
+	if spy.TotalCalls() != 0 {
+		t.Fatalf("expected 0 live calls, got %d", spy.TotalCalls())
+	}
+}
+
+// Test 8: Replay & Recovery Consistency in Dry-Run Mode
+func TestDryRunSpy_ReplayAndRecoveryConsistency(t *testing.T) {
+	_, _, verifier, led, handler := setupSpyTestServer(t)
+
+	m := helperCreateSignedMandate(t, nil)
+	verifier.RegisterPrincipal(m.PrincipalID, m.PublicKey)
+
+	reqPayload := models.PaymentIntentRequest{
+		Mandate:        m,
+		AgentID:        m.AgentID,
+		MerchantID:     "merchant_staples",
+		Amount:         "29.98",
+		Currency:       "USD",
+		Category:       "office_supplies",
+		Items:          []models.Item{{Name: "Paper Ream", Qty: 2, UnitPrice: "14.99"}},
+		AgentReasoning: "Replay test",
+		IdempotencyKey: "replay_test_idemp_001",
+		DryRun:         true,
+	}
+
+	body, _ := json.Marshal(reqPayload)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/v1/payments/intents", bytes.NewBuffer(body)))
+
+	var dec models.DecisionResponse
+	_ = json.Unmarshal(w.Body.Bytes(), &dec)
+
+	// Run full replay on ledger
+	if err := led.Replay(context.Background()); err != nil {
+		t.Fatalf("ledger.Replay error: %v", err)
+	}
+
+	// Verify projection after replay
+	proj, err := led.GetPaymentProjection(context.Background(), dec.PaymentID)
+	if err != nil {
+		t.Fatalf("failed to retrieve projection after replay: %v", err)
+	}
+
+	if !proj.IsDryRun {
+		t.Fatalf("expected proj.IsDryRun=true after replay")
+	}
+	if proj.State != "captured" {
+		t.Fatalf("expected proj.State=captured after replay, got: %s", proj.State)
+	}
+
+	// Mandate total spent must STILL be 0.00 after replay
+	totalSpent, _ := led.GetTotalSpent(m.MandateID)
+	if totalSpent != 0.00 {
+		t.Fatalf("expected 0.00 spent after replay, got %.2f", totalSpent)
 	}
 }

@@ -21,6 +21,7 @@ type Config struct {
 	RiskBlockThreshold  float64
 	RiskStepUpThreshold float64
 
+	GatewayMode        string // "dryrun", "mock", "live"
 	PayPalEnv          string
 	PayPalClientID     string
 	PayPalClientSecret string
@@ -64,6 +65,18 @@ func Load() *Config {
 		mockMode = false
 	}
 
+	// Determine guaranteed deployment mode
+	gatewayMode := strings.ToLower(strings.TrimSpace(os.Getenv("GATEWAY_MODE")))
+	if gatewayMode == "" {
+		if os.Getenv("DRY_RUN_MODE") == "true" || strings.ToLower(os.Getenv("PAYPAL_MODE")) == "dryrun" {
+			gatewayMode = "dryrun"
+		} else if mockMode {
+			gatewayMode = "mock"
+		} else {
+			gatewayMode = "live"
+		}
+	}
+
 	return &Config{
 		Port:                port,
 		Env:                 env,
@@ -73,10 +86,11 @@ func Load() *Config {
 		IntelTimeout:        time.Duration(intelTimeoutMS) * time.Millisecond,
 		IntelAPIToken:       os.Getenv("INTEL_API_TOKEN"),
 		InternalLedgerToken: getEnv("INTERNAL_LEDGER_TOKEN", "secret-gateway-token-123"),
-		AgentAuthToken:      os.Getenv("AGENT_AUTH_TOKEN"),
-		HumanAuthToken:      os.Getenv("HUMAN_AUTH_TOKEN"),
+		AgentAuthToken:      getEnv("AGENT_AUTH_TOKEN", "agentguard-agent-token-xyz"),
+		HumanAuthToken:      getEnv("HUMAN_AUTH_TOKEN", "agentguard-human-token-xyz"),
 		RiskBlockThreshold:  blockThresh,
 		RiskStepUpThreshold: stepUpThresh,
+		GatewayMode:         gatewayMode,
 		PayPalEnv:          getEnv("PAYPAL_ENV", "sandbox"),
 		PayPalClientID:     clientID,
 		PayPalClientSecret: clientSecret,

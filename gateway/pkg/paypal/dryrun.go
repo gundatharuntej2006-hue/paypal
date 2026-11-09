@@ -11,13 +11,52 @@ import (
 
 // DryRunClient is structurally payment-incapable. It satisfies the Client interface
 // without network access and without touching any PayPal accounts, guaranteed.
-type DryRunClient struct{}
+// It supports failure injection for comprehensive red-team resilience testing.
+type DryRunClient struct {
+	mu                sync.RWMutex
+	InjectedOrderErr  error
+	InjectedAuthErr   error
+	InjectedCapErr    error
+	InjectedCapStatus string // e.g. "DECLINED"
+	InjectedVoidErr   error
+	InjectedRefundErr error
+}
 
 func NewDryRunClient() *DryRunClient {
 	return &DryRunClient{}
 }
 
+func (d *DryRunClient) InjectOrderError(err error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.InjectedOrderErr = err
+}
+
+func (d *DryRunClient) InjectAuthorizeError(err error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.InjectedAuthErr = err
+}
+
+func (d *DryRunClient) InjectCaptureError(err error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.InjectedCapErr = err
+}
+
+func (d *DryRunClient) InjectCaptureStatus(status string) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	d.InjectedCapStatus = status
+}
+
 func (d *DryRunClient) CreateOrder(ctx context.Context, req OrderRequest) (*OrderResponse, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	if d.InjectedOrderErr != nil {
+		return nil, d.InjectedOrderErr
+	}
+
 	orderID := "DRYRUN_ORDER_" + uuid.New().String()[:8]
 	return &OrderResponse{
 		ID:          orderID,
@@ -27,13 +66,30 @@ func (d *DryRunClient) CreateOrder(ctx context.Context, req OrderRequest) (*Orde
 }
 
 func (d *DryRunClient) AuthorizeOrder(ctx context.Context, orderID string, requestID string) (string, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	if d.InjectedAuthErr != nil {
+		return "", d.InjectedAuthErr
+	}
+
 	return "DRYRUN_AUTH_" + uuid.New().String()[:8], nil
 }
 
 func (d *DryRunClient) CaptureAuthorization(ctx context.Context, authID string, amount string, currency string, isFinal bool, requestID string) (*CaptureResponse, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	if d.InjectedCapErr != nil {
+		return nil, d.InjectedCapErr
+	}
+
+	status := "COMPLETED"
+	if d.InjectedCapStatus != "" {
+		status = d.InjectedCapStatus
+	}
+
 	return &CaptureResponse{
 		ID:           "DRYRUN_CAP_" + uuid.New().String()[:8],
-		Status:       "COMPLETED",
+		Status:       status,
 		Amount:       amount,
 		Currency:     currency,
 		FinalCapture: isFinal,
@@ -41,6 +97,12 @@ func (d *DryRunClient) CaptureAuthorization(ctx context.Context, authID string, 
 }
 
 func (d *DryRunClient) VoidAuthorization(ctx context.Context, authID string, requestID string) (*VoidResponse, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	if d.InjectedVoidErr != nil {
+		return nil, d.InjectedVoidErr
+	}
+
 	return &VoidResponse{
 		ID:     authID,
 		Status: "VOIDED",
@@ -48,6 +110,12 @@ func (d *DryRunClient) VoidAuthorization(ctx context.Context, authID string, req
 }
 
 func (d *DryRunClient) RefundCapture(ctx context.Context, captureID string, amount string, currency string, note string, requestID string) (*RefundResponse, error) {
+	d.mu.RLock()
+	defer d.mu.RUnlock()
+	if d.InjectedRefundErr != nil {
+		return nil, d.InjectedRefundErr
+	}
+
 	return &RefundResponse{
 		ID:       "DRYRUN_REF_" + uuid.New().String()[:8],
 		Status:   "COMPLETED",

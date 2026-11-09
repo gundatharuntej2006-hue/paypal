@@ -30,6 +30,7 @@ var (
 	ErrInvalidCurrencyFormat = errors.New("invalid currency code: must be 3-letter ISO code")
 	ErrAmountItemMismatch    = errors.New("declared payment amount does not match sum of item quantities and unit prices")
 	ErrMissingMerchant       = errors.New("merchant_id is required")
+	ErrUnverifiedMerchant    = errors.New("merchant is not registered in trusted merchant registry")
 )
 
 var (
@@ -81,6 +82,7 @@ type MerchantPayeeInfo struct {
 // MerchantRegistry maps merchant IDs to verified PayPal payee accounts.
 type MerchantRegistry interface {
 	GetPayee(merchantID string) (MerchantPayeeInfo, error)
+	HasMerchant(merchantID string) bool
 	RegisterMerchant(merchantID string, info MerchantPayeeInfo)
 }
 
@@ -99,6 +101,10 @@ func NewMemoryMerchantRegistry() *MemoryMerchantRegistry {
 		Email:           "books-seller@sandbox.agentguard.local",
 		PayPalAccountID: "PAYEE_BOOKS_123",
 	})
+	r.RegisterMerchant("merchant_staples", MerchantPayeeInfo{
+		Email:           "staples-seller@sandbox.agentguard.local",
+		PayPalAccountID: "PAYEE_STAPLES_001",
+	})
 	r.RegisterMerchant("merchant_electronics_456", MerchantPayeeInfo{
 		Email:           "gadgets-seller@sandbox.agentguard.local",
 		PayPalAccountID: "PAYEE_ELEC_456",
@@ -107,7 +113,22 @@ func NewMemoryMerchantRegistry() *MemoryMerchantRegistry {
 		Email:           "food-seller@sandbox.agentguard.local",
 		PayPalAccountID: "PAYEE_FOOD_789",
 	})
+	r.RegisterMerchant("merchant_a", MerchantPayeeInfo{
+		Email:           "merchant-a@sandbox.agentguard.local",
+		PayPalAccountID: "PAYEE_MERCHANT_A",
+	})
+	r.RegisterMerchant("merchant_123", MerchantPayeeInfo{
+		Email:           "seller-electronics@sandbox.agentguard.local",
+		PayPalAccountID: "PAYEE_ELEC_456",
+	})
 	return r
+}
+
+func (r *MemoryMerchantRegistry) HasMerchant(merchantID string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	_, ok := r.merchants[strings.ToLower(strings.TrimSpace(merchantID))]
+	return ok
 }
 
 func (r *MemoryMerchantRegistry) GetPayee(merchantID string) (MerchantPayeeInfo, error) {
@@ -182,6 +203,13 @@ func (v *Verifier) SetMerchantRegistry(mr MerchantRegistry) {
 func (v *Verifier) RegisterPrincipal(principalID string, publicKeyBase64 string) {
 	if v.principalRegistry != nil {
 		v.principalRegistry.RegisterPrincipal(principalID, publicKeyBase64)
+	}
+}
+
+// RegisterMerchant registers a merchant in the verifier's merchant registry.
+func (v *Verifier) RegisterMerchant(merchantID string, info MerchantPayeeInfo) {
+	if r, ok := v.merchantRegistry.(*MemoryMerchantRegistry); ok {
+		r.RegisterMerchant(merchantID, info)
 	}
 }
 
@@ -310,7 +338,7 @@ func (v *Verifier) VerifyMandate(req *models.PaymentIntentRequest, now time.Time
 		return &VerificationResult{Valid: false, FailedReason: ErrMissingMerchant.Error()}, ErrMissingMerchant
 	}
 
-	// 10. Merchant allowlist check
+	// 10. Merchant allowlist check (mandate policy)
 	if len(m.AllowedMerchants) > 0 {
 		merchantAllowed := false
 		for _, allowed := range m.AllowedMerchants {
@@ -322,6 +350,14 @@ func (v *Verifier) VerifyMandate(req *models.PaymentIntentRequest, now time.Time
 		if !merchantAllowed {
 			return &VerificationResult{Valid: false, FailedReason: ErrDisallowedMerchant.Error()}, ErrDisallowedMerchant
 		}
+	}
+
+	// In strict mode, merchant must be registered in trusted merchant registry
+	if v.strictRegistry && v.merchantRegistry != nil && !v.merchantRegistry.HasMerchant(req.MerchantID) {
+		return &VerificationResult{
+			Valid:        false,
+			FailedReason: fmt.Sprintf("%s: merchant '%s' is not registered", ErrUnverifiedMerchant, req.MerchantID),
+		}, ErrUnverifiedMerchant
 	}
 
 	// 11. Category allowlist check

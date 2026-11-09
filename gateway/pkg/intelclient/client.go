@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -79,15 +80,10 @@ func (c *HTTPIntelClient) ScanContent(ctx context.Context, contexts []models.Sou
 	if err := json.Unmarshal(body, &scanResp); err != nil {
 		return nil, fmt.Errorf("failed to decode scan response: %w", err)
 	}
-	// Strict validation: enforce allowed verdict enum and confidence bounds
-	switch scanResp.Verdict {
-	case "clean", "injection", "unknown":
-		// valid
-	default:
+	if err := ValidateScanResponse(&scanResp); err != nil {
+		reason := fmt.Sprintf("schema_validation_failed: %v", err)
 		scanResp.Verdict = "unknown"
-	}
-	if scanResp.Confidence < 0.0 || scanResp.Confidence > 1.0 {
-		scanResp.Verdict = "unknown"
+		scanResp.Reason = &reason
 	}
 	return &scanResp, nil
 }
@@ -126,15 +122,10 @@ func (c *HTTPIntelClient) JudgeIntent(ctx context.Context, req models.JudgeReque
 	if err := json.Unmarshal(body, &judgeResp); err != nil {
 		return nil, fmt.Errorf("failed to decode judge response: %w", err)
 	}
-	// Strict validation: enforce allowed verdict enum and confidence bounds
-	switch judgeResp.Verdict {
-	case "aligned", "misaligned", "unknown":
-		// valid
-	default:
+	if err := ValidateJudgeResponse(&judgeResp); err != nil {
+		reason := fmt.Sprintf("schema_validation_failed: %v", err)
 		judgeResp.Verdict = "unknown"
-	}
-	if judgeResp.Confidence < 0.0 || judgeResp.Confidence > 1.0 {
-		judgeResp.Verdict = "unknown"
+		judgeResp.Reason = &reason
 	}
 	return &judgeResp, nil
 }
@@ -173,20 +164,67 @@ func (c *HTTPIntelClient) RiskScore(ctx context.Context, req models.RiskRequest)
 	if err := json.Unmarshal(body, &riskResp); err != nil {
 		return nil, fmt.Errorf("failed to decode risk response: %w", err)
 	}
-	// Strict validation: enforce status enum and score bounds
-	switch riskResp.Status {
-	case "ok", "unknown":
-		// valid
-	default:
+	if err := ValidateRiskResponse(&riskResp); err != nil {
+		reason := fmt.Sprintf("schema_validation_failed: %v", err)
 		riskResp.Status = "unknown"
-	}
-	if riskResp.Status == "ok" && riskResp.Score != nil {
-		if *riskResp.Score < 0.0 || *riskResp.Score > 1.0 {
-			riskResp.Status = "unknown"
-			riskResp.Score = nil
-		}
+		riskResp.Reason = &reason
+		riskResp.Score = nil
 	}
 	return &riskResp, nil
+}
+
+var (
+	ErrInvalidVerdict       = errors.New("invalid intelligence verdict")
+	ErrConfidenceOutOfRange = errors.New("confidence must be between 0.0 and 1.0")
+	ErrInvalidRiskStatus    = errors.New("invalid risk status")
+	ErrRiskScoreOutOfRange  = errors.New("risk score must be between 0.0 and 1.0")
+)
+
+func ValidateScanResponse(resp *models.ScanResponse) error {
+	if resp == nil {
+		return errors.New("scan response is nil")
+	}
+	switch resp.Verdict {
+	case "clean", "injection", "unknown":
+	default:
+		return fmt.Errorf("%w: '%s'", ErrInvalidVerdict, resp.Verdict)
+	}
+	if resp.Confidence < 0.0 || resp.Confidence > 1.0 {
+		return fmt.Errorf("%w: %f", ErrConfidenceOutOfRange, resp.Confidence)
+	}
+	return nil
+}
+
+func ValidateJudgeResponse(resp *models.JudgeResponse) error {
+	if resp == nil {
+		return errors.New("judge response is nil")
+	}
+	switch resp.Verdict {
+	case "aligned", "misaligned", "unknown":
+	default:
+		return fmt.Errorf("%w: '%s'", ErrInvalidVerdict, resp.Verdict)
+	}
+	if resp.Confidence < 0.0 || resp.Confidence > 1.0 {
+		return fmt.Errorf("%w: %f", ErrConfidenceOutOfRange, resp.Confidence)
+	}
+	return nil
+}
+
+func ValidateRiskResponse(resp *models.RiskResponse) error {
+	if resp == nil {
+		return errors.New("risk response is nil")
+	}
+	switch resp.Status {
+	case "ok", "unknown":
+	default:
+		return fmt.Errorf("%w: '%s'", ErrInvalidRiskStatus, resp.Status)
+	}
+	if resp.Status == "ok" && resp.Score != nil {
+		if *resp.Score < 0.0 || *resp.Score > 1.0 {
+			return fmt.Errorf("%w: %f", ErrRiskScoreOutOfRange, *resp.Score)
+		}
+	}
+	return nil
 }
 
 // CallAllParallel runs the three AI checks concurrently within the timeout budget,

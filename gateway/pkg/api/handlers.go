@@ -8,6 +8,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -389,6 +390,9 @@ func (s *Server) handlePaymentIntent(w http.ResponseWriter, r *http.Request) {
 	// Resolve verified merchant payee binding (Fix 8)
 	payeeEmail, payeeMerchantID := s.verifier.GetMerchantPayee(req.MerchantID)
 
+	reqAmtFloat, _ := strconv.ParseFloat(req.Amount, 64)
+	maxTotalFloat, _ := strconv.ParseFloat(req.Mandate.MaxTotal, 64)
+
 	// 5. Execute decision (Tharun requirement: separate payment-client interface for DryRun vs Live)
 	if isDryRun {
 		switch decision.Decision {
@@ -404,7 +408,16 @@ func (s *Server) handlePaymentIntent(w http.ResponseWriter, r *http.Request) {
 				PayeeMerchantID: payeeMerchantID,
 			})
 			authID, _ := s.dryRunClient.AuthorizeOrder(ctx, orderResp.ID, "dryrun_auth:"+paymentID)
-			capResp, _ := s.dryRunClient.CaptureAuthorization(ctx, authID, req.Amount, req.Currency, true, "dryrun_cap:"+paymentID)
+			capResp, capErr := s.dryRunClient.CaptureAuthorization(ctx, authID, req.Amount, req.Currency, true, "dryrun_cap:"+paymentID)
+
+			if capErr != nil || capResp == nil || capResp.Status != "COMPLETED" {
+				_ = s.stateMachine.Transition(paymentID, statemachine.StateRejected)
+				_, _ = s.emit(ctx, "paypal.capture_failed", &paymentID, &req.Mandate.MandateID, nil, "dry_run", map[string]interface{}{
+					"error": fmt.Sprintf("capture failed: %v", capErr),
+				})
+				http.Error(w, "dry-run payment capture failed", http.StatusBadGateway)
+				return
+			}
 
 			_ = s.stateMachine.Transition(paymentID, statemachine.StateAuthorized)
 			_ = s.stateMachine.Transition(paymentID, statemachine.StateCaptured)
@@ -464,6 +477,20 @@ func (s *Server) handlePaymentIntent(w http.ResponseWriter, r *http.Request) {
 		// Live payment execution via live paypalClient
 		switch decision.Decision {
 		case models.DecisionAllow:
+			// Atomic budget reservation before calling PayPal
+			if maxTotalFloat > 0 {
+				if err := s.ledger.ReserveBudget(ctx, req.Mandate.MandateID, paymentID, reqAmtFloat, maxTotalFloat); err != nil {
+					_ = s.stateMachine.Transition(paymentID, statemachine.StateRejected)
+					decision.Decision = models.DecisionBlock
+					decision.Reasons = append(decision.Reasons, "concurrent_budget_cap_exceeded")
+					_ = s.ledger.SaveDecisionIdempotency(ctx, namespacedKey, &decision)
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusOK)
+					json.NewEncoder(w).Encode(decision)
+					return
+				}
+			}
+
 			orderID := req.Mandate.PayPalOrderID
 			approvalURL := ""
 
@@ -479,6 +506,7 @@ func (s *Server) handlePaymentIntent(w http.ResponseWriter, r *http.Request) {
 					PayeeMerchantID: payeeMerchantID,
 				})
 				if err != nil {
+					s.ledger.ReleaseBudgetReservation(ctx, req.Mandate.MandateID, paymentID)
 					log.Printf("[gateway] paypal CreateOrder error: %v", err)
 					http.Error(w, fmt.Sprintf("paypal error: %v", err), http.StatusBadGateway)
 					return
@@ -491,6 +519,7 @@ func (s *Server) handlePaymentIntent(w http.ResponseWriter, r *http.Request) {
 			// Authorize order
 			authID, err := s.paypalClient.AuthorizeOrder(ctx, orderID, "auth:"+paymentID)
 			if err != nil {
+				s.ledger.ReleaseBudgetReservation(ctx, req.Mandate.MandateID, paymentID)
 				log.Printf("[gateway] paypal AuthorizeOrder error: %v", err)
 				http.Error(w, fmt.Sprintf("paypal authorize error: %v", err), http.StatusBadGateway)
 				return
@@ -501,13 +530,20 @@ func (s *Server) handlePaymentIntent(w http.ResponseWriter, r *http.Request) {
 				"authorization_id": authID,
 			})
 
-			// Capture authorization for approved amount
+			// Capture authorization for approved amount & verify status
 			captureResp, err := s.paypalClient.CaptureAuthorization(ctx, authID, req.Amount, req.Currency, true, "cap:"+paymentID)
-			if err != nil {
-				log.Printf("[gateway] paypal CaptureAuthorization error: %v", err)
-				http.Error(w, fmt.Sprintf("paypal capture error: %v", err), http.StatusBadGateway)
+			if err != nil || captureResp == nil || captureResp.Status != "COMPLETED" {
+				s.ledger.ReleaseBudgetReservation(ctx, req.Mandate.MandateID, paymentID)
+				log.Printf("[gateway] paypal CaptureAuthorization error: %v, resp: %+v", err, captureResp)
+				_ = s.stateMachine.Transition(paymentID, statemachine.StateRejected)
+				_, _ = s.emit(ctx, "paypal.capture_failed", &paymentID, &req.Mandate.MandateID, nil, "paypal", map[string]interface{}{
+					"error": fmt.Sprintf("%v", err),
+				})
+				http.Error(w, fmt.Sprintf("paypal capture failed: %v", err), http.StatusBadGateway)
 				return
 			}
+
+			s.ledger.CommitBudgetReservation(ctx, req.Mandate.MandateID, paymentID)
 			_ = s.stateMachine.Transition(paymentID, statemachine.StateCaptured)
 			_, _ = s.emit(ctx, "paypal.captured", &paymentID, &req.Mandate.MandateID, nil, "paypal", captureResp)
 
@@ -566,7 +602,7 @@ func (s *Server) handlePaymentIntent(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(decision)
 }
 
-// Fix 4 & 7: Hardened Human Step-Up Approval with dry-run isolation & single-use token consumption
+// Fix 4 & 7: Hardened Human Step-Up Approval with dry-run isolation & atomic single-use token consumption
 func (s *Server) handleApprovePayment(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	paymentID := r.PathValue("id")
@@ -592,9 +628,32 @@ func (s *Server) handleApprovePayment(w http.ResponseWriter, r *http.Request) {
 		_ = json.NewDecoder(r.Body).Decode(&approvalReq)
 	}
 
+	sentToken := approvalReq.StepUpToken
+	if sentToken == "" {
+		sentToken = r.Header.Get("X-Step-Up-Token")
+	}
+
+	// Point 2: ATOMIC token consumption before executing approval (prevents TOCTOU concurrency race)
+	if err := s.ledger.ConsumeStepUpToken(ctx, paymentID, sentToken); err != nil {
+		if errors.Is(err, ledger.ErrTokenAlreadyConsumed) {
+			http.Error(w, "step_up_token has already been consumed", http.StatusConflict)
+			return
+		}
+		if errors.Is(err, ledger.ErrTokenExpired) {
+			http.Error(w, "step_up_token has expired (15-minute validity window)", http.StatusForbidden)
+			return
+		}
+		if errors.Is(err, ledger.ErrTokenMismatch) {
+			http.Error(w, "invalid or missing step_up_token for human approval", http.StatusForbidden)
+			return
+		}
+		http.Error(w, fmt.Sprintf("token verification error: %v", err), http.StatusBadRequest)
+		return
+	}
+
 	state, err := s.stateMachine.Get(paymentID)
 	if err != nil || state != statemachine.StateStepUpPending {
-		http.Error(w, fmt.Sprintf("payment cannot be approved in state '%s' (must be 'step_up_pending')", state), http.StatusBadRequest)
+		http.Error(w, fmt.Sprintf("payment cannot be approved in state '%s' (must be 'step_up_pending')", state), http.StatusConflict)
 		return
 	}
 
@@ -602,28 +661,6 @@ func (s *Server) handleApprovePayment(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		http.Error(w, "payment projection not found", http.StatusNotFound)
 		return
-	}
-
-	// Single-use token consumption protection
-	if proj.StepUpConsumed {
-		http.Error(w, "step_up_token has already been consumed", http.StatusConflict)
-		return
-	}
-
-	// Validate step_up_token and expiry
-	if proj.StepUpToken != "" {
-		sentToken := approvalReq.StepUpToken
-		if sentToken == "" {
-			sentToken = r.Header.Get("X-Step-Up-Token")
-		}
-		if sentToken != proj.StepUpToken {
-			http.Error(w, "invalid or missing step_up_token for human approval", http.StatusForbidden)
-			return
-		}
-		if proj.StepUpExpiresAt != nil && time.Now().UTC().After(*proj.StepUpExpiresAt) {
-			http.Error(w, "step_up_token has expired (15-minute validity window)", http.StatusForbidden)
-			return
-		}
 	}
 
 	// Point 1 & 4: Dry-Run Isolation on step-up approval route
@@ -637,10 +674,19 @@ func (s *Server) handleApprovePayment(w http.ResponseWriter, r *http.Request) {
 		}
 		_ = s.stateMachine.Transition(paymentID, statemachine.StateAuthorized)
 
-		capResp, _ := s.dryRunClient.CaptureAuthorization(ctx, authID, proj.Amount, proj.Currency, true, "dryrun_cap_stepup:"+paymentID)
+		capResp, capErr := s.dryRunClient.CaptureAuthorization(ctx, authID, proj.Amount, proj.Currency, true, "dryrun_cap_stepup:"+paymentID)
+		if capErr != nil || capResp == nil || capResp.Status != "COMPLETED" {
+			_ = s.stateMachine.Transition(paymentID, statemachine.StateRejected)
+			_, _ = s.emit(ctx, "paypal.capture_failed", &paymentID, &proj.MandateID, nil, "dry_run", map[string]interface{}{
+				"error": fmt.Sprintf("dry-run capture failed: %v", capErr),
+			})
+			http.Error(w, "dry-run payment capture failed", http.StatusBadGateway)
+			return
+		}
+
 		_ = s.stateMachine.Transition(paymentID, statemachine.StateCaptured)
 
-		// Mark token consumed and record dry-run approval
+		// Record dry-run approval
 		_, _ = s.emit(ctx, "payment.step_up_token_consumed", &paymentID, &proj.MandateID, nil, "dry_run", map[string]interface{}{
 			"payment_id": paymentID,
 		})
@@ -683,10 +729,10 @@ func (s *Server) handleApprovePayment(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = s.stateMachine.Transition(paymentID, statemachine.StateAuthorized)
 
-	// Fix 4: CRITICAL - Only report approved if CaptureAuthorization actually succeeds!
+	// Fix 4: CRITICAL - Only report approved if CaptureAuthorization actually succeeds with status COMPLETED!
 	capResp, capErr := s.paypalClient.CaptureAuthorization(ctx, authID, proj.Amount, proj.Currency, true, "cap_stepup:"+paymentID)
-	if capErr != nil || capResp == nil {
-		log.Printf("[gateway] step-up capture failed: %v", capErr)
+	if capErr != nil || capResp == nil || capResp.Status != "COMPLETED" {
+		log.Printf("[gateway] step-up capture failed: %v, resp: %+v", capErr, capResp)
 		_ = s.stateMachine.Transition(paymentID, statemachine.StateRejected)
 		_, _ = s.emit(ctx, "paypal.capture_failed", &paymentID, &proj.MandateID, nil, "paypal", map[string]interface{}{
 			"error": fmt.Sprintf("%v", capErr),

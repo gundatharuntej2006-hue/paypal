@@ -17,8 +17,12 @@ import (
 )
 
 var (
-	ErrDuplicateEvent = errors.New("event with idempotency_key already recorded (conflict)")
-	ErrNotFound       = errors.New("record not found in ledger")
+	ErrDuplicateEvent       = errors.New("event with idempotency_key already recorded (conflict)")
+	ErrNotFound             = errors.New("record not found in ledger")
+	ErrTokenAlreadyConsumed = errors.New("step_up_token has already been consumed")
+	ErrTokenExpired         = errors.New("step_up_token has expired")
+	ErrTokenMismatch        = errors.New("step_up_token does not match")
+	ErrBudgetExceeded       = errors.New("budget reservation exceeds mandate max_total cap")
 )
 
 // Ledger defines operations for the append-only event store and projections.
@@ -33,6 +37,10 @@ type Ledger interface {
 	GetTotalSpent(mandateID string) (float64, error)
 	GetDecisionByIdempotencyKey(ctx context.Context, idempKey string) (*models.DecisionResponse, error)
 	SaveDecisionIdempotency(ctx context.Context, idempKey string, resp *models.DecisionResponse) error
+	ConsumeStepUpToken(ctx context.Context, paymentID string, token string) error
+	ReserveBudget(ctx context.Context, mandateID string, paymentID string, amount float64, maxTotal float64) error
+	ReleaseBudgetReservation(ctx context.Context, mandateID string, paymentID string)
+	CommitBudgetReservation(ctx context.Context, mandateID string, paymentID string)
 	Replay(ctx context.Context) error
 	Close() error
 }
@@ -53,6 +61,9 @@ type MemoryLedger struct {
 	// Projections
 	paymentProjections map[string]*models.PaymentProjection
 	mandateProjections map[string]*models.MandateProjection
+
+	// Atomic Budget Reservations: mandateID -> paymentID -> amount
+	budgetReservations map[string]map[string]float64
 }
 
 func NewMemoryLedger() *MemoryLedger {
@@ -62,6 +73,7 @@ func NewMemoryLedger() *MemoryLedger {
 		cachedDecisions:    make(map[string]*models.DecisionResponse),
 		paymentProjections: make(map[string]*models.PaymentProjection),
 		mandateProjections: make(map[string]*models.MandateProjection),
+		budgetReservations: make(map[string]map[string]float64),
 	}
 }
 
@@ -209,6 +221,73 @@ func (m *MemoryLedger) SaveDecisionIdempotency(ctx context.Context, idempKey str
 	respCopy := *resp
 	m.cachedDecisions[idempKey] = &respCopy
 	return nil
+}
+
+// ConsumeStepUpToken atomically verifies and consumes a step-up token before execution.
+func (m *MemoryLedger) ConsumeStepUpToken(ctx context.Context, paymentID string, token string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	proj, ok := m.paymentProjections[paymentID]
+	if !ok {
+		return ErrNotFound
+	}
+	if proj.StepUpConsumed {
+		return ErrTokenAlreadyConsumed
+	}
+	if proj.StepUpToken != "" && proj.StepUpToken != token {
+		return ErrTokenMismatch
+	}
+	if proj.StepUpExpiresAt != nil && time.Now().UTC().After(*proj.StepUpExpiresAt) {
+		return ErrTokenExpired
+	}
+	proj.StepUpConsumed = true
+	return nil
+}
+
+// ReserveBudget atomically reserves budget for a pending payment against the mandate max_total cap.
+func (m *MemoryLedger) ReserveBudget(ctx context.Context, mandateID string, paymentID string, amount float64, maxTotal float64) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	totalSpent := 0.0
+	if mProj, ok := m.mandateProjections[mandateID]; ok {
+		totalSpent, _ = strconv.ParseFloat(mProj.TotalSpent, 64)
+	}
+
+	activeReserved := 0.0
+	if resMap, ok := m.budgetReservations[mandateID]; ok {
+		for pid, amt := range resMap {
+			if pid != paymentID {
+				activeReserved += amt
+			}
+		}
+	} else {
+		m.budgetReservations[mandateID] = make(map[string]float64)
+	}
+
+	if totalSpent+activeReserved+amount > maxTotal {
+		return ErrBudgetExceeded
+	}
+
+	m.budgetReservations[mandateID][paymentID] = amount
+	return nil
+}
+
+func (m *MemoryLedger) ReleaseBudgetReservation(ctx context.Context, mandateID string, paymentID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if resMap, ok := m.budgetReservations[mandateID]; ok {
+		delete(resMap, paymentID)
+	}
+}
+
+func (m *MemoryLedger) CommitBudgetReservation(ctx context.Context, mandateID string, paymentID string) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if resMap, ok := m.budgetReservations[mandateID]; ok {
+		delete(resMap, paymentID)
+	}
 }
 
 // Replay wipes all projections and re-applies all events sequentially.
@@ -461,6 +540,14 @@ func (p *PostgresLedger) migrate() error {
 		currency TEXT NOT NULL,
 		last_updated TIMESTAMP WITH TIME ZONE NOT NULL
 	);
+
+	CREATE TABLE IF NOT EXISTS projections_budget_reservations (
+		mandate_id TEXT NOT NULL,
+		payment_id TEXT PRIMARY KEY,
+		amount NUMERIC NOT NULL,
+		created_at TIMESTAMP WITH TIME ZONE NOT NULL
+	);
+	CREATE INDEX IF NOT EXISTS idx_budget_res_mandate ON projections_budget_reservations(mandate_id);
 	`
 	_, err := p.db.Exec(schema)
 	return err
@@ -851,6 +938,97 @@ func (p *PostgresLedger) SaveDecisionIdempotency(ctx context.Context, idempKey s
 		idempKey, string(dataBytes), time.Now().UTC(),
 	)
 	return err
+}
+
+func (p *PostgresLedger) ConsumeStepUpToken(ctx context.Context, paymentID string, token string) error {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var stepUpToken string
+	var stepUpConsumed bool
+	var stepUpExpiresAt *time.Time
+
+	row := tx.QueryRowContext(ctx, `
+		SELECT COALESCE(step_up_token, ''), step_up_consumed, step_up_expires_at 
+		FROM projections_payments 
+		WHERE payment_id = $1 
+		FOR UPDATE
+	`, paymentID)
+	err = row.Scan(&stepUpToken, &stepUpConsumed, &stepUpExpiresAt)
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return ErrNotFound
+		}
+		return err
+	}
+
+	if stepUpConsumed {
+		return ErrTokenAlreadyConsumed
+	}
+	if stepUpToken != "" && stepUpToken != token {
+		return ErrTokenMismatch
+	}
+	if stepUpExpiresAt != nil && time.Now().UTC().After(*stepUpExpiresAt) {
+		return ErrTokenExpired
+	}
+
+	_, err = tx.ExecContext(ctx, `UPDATE projections_payments SET step_up_consumed = TRUE, updated_at = $2 WHERE payment_id = $1`, paymentID, time.Now().UTC())
+	if err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
+func (p *PostgresLedger) ReserveBudget(ctx context.Context, mandateID string, paymentID string, amount float64, maxTotal float64) error {
+	tx, err := p.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+
+	var totalSpentStr string
+	row := tx.QueryRowContext(ctx, `SELECT total_spent FROM projections_mandates WHERE mandate_id = $1 FOR UPDATE`, mandateID)
+	err = row.Scan(&totalSpentStr)
+	totalSpent := 0.0
+	if err == nil {
+		totalSpent, _ = strconv.ParseFloat(totalSpentStr, 64)
+	}
+
+	var activeReserved sql.NullFloat64
+	resRow := tx.QueryRowContext(ctx, `SELECT SUM(amount) FROM projections_budget_reservations WHERE mandate_id = $1 AND payment_id != $2`, mandateID, paymentID)
+	_ = resRow.Scan(&activeReserved)
+
+	reservedSum := 0.0
+	if activeReserved.Valid {
+		reservedSum = activeReserved.Float64
+	}
+
+	if totalSpent+reservedSum+amount > maxTotal {
+		return ErrBudgetExceeded
+	}
+
+	_, err = tx.ExecContext(ctx, `
+		INSERT INTO projections_budget_reservations (mandate_id, payment_id, amount, created_at)
+		VALUES ($1, $2, $3, $4)
+		ON CONFLICT (payment_id) DO UPDATE SET amount = EXCLUDED.amount, created_at = EXCLUDED.created_at
+	`, mandateID, paymentID, amount, time.Now().UTC())
+	if err != nil {
+		return err
+	}
+
+	return tx.Commit()
+}
+
+func (p *PostgresLedger) ReleaseBudgetReservation(ctx context.Context, mandateID string, paymentID string) {
+	_, _ = p.db.ExecContext(ctx, `DELETE FROM projections_budget_reservations WHERE payment_id = $1`, paymentID)
+}
+
+func (p *PostgresLedger) CommitBudgetReservation(ctx context.Context, mandateID string, paymentID string) {
+	_, _ = p.db.ExecContext(ctx, `DELETE FROM projections_budget_reservations WHERE payment_id = $1`, paymentID)
 }
 
 func (p *PostgresLedger) Replay(ctx context.Context) error {
