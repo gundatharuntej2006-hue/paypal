@@ -34,6 +34,8 @@ const live: typeof stub = {
   getBenchmarkReport: () => request<BenchmarkReport>('/benchmark'),
   subscribeEvents(onEvent, paymentId, onConnection) {
     const query = paymentId ? '?' + new URLSearchParams({ payment_id: paymentId }) : '';
+    // Keep the same EventSource across network failures so the browser
+    // reconnects and sends Last-Event-ID when the gateway supplies SSE IDs.
     const source = new EventSource(gateway + '/v1/events' + query);
     source.onopen = () => onConnection?.(true);
     source.onerror = () => onConnection?.(false);

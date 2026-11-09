@@ -1,3 +1,5 @@
+import { Ledger } from './ledger/Ledger';
+import { appendEvent, decisionLabels } from './ledger/rows';
 import { CopyButton, MandateBuilder } from './mandates/MandateBuilder';
 import { useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
@@ -13,7 +15,6 @@ const pages = [
   { path: '/benchmark', label: 'Benchmark', icon: '▥' },
 ];
 
-const decisionLabels: Record<Decision, string> = { allow: 'Allow', step_up: 'Step-up', block: 'Block' };
 const percent = (value: number) => new Intl.NumberFormat(undefined, { style: 'percent', maximumFractionDigits: 1 }).format(value);
 const amount = (value: string, currency: string) =>
   new Intl.NumberFormat(undefined, { style: 'currency', currency }).format(Number(value));
@@ -101,31 +102,6 @@ function Mandates() {
   </Page>;
 }
 
-function Ledger({ recent }: { recent: EventEnvelope[] }) {
-  const state = useData(client.listPayments);
-  return <Page label="Activity" title="Live Ledger" description="Review payment decisions and follow the latest events from AgentGuard.">
-    <DataView state={state} empty="No payments have been recorded.">{(payments) => payments.length > 0 &&
-      <div className="panel table-wrap"><table>
-        <caption>Recent payments</caption>
-        <thead><tr><th scope="col">Payment</th><th scope="col">Merchant</th><th scope="col">Amount</th><th scope="col">Decision</th><th scope="col">Recorded</th></tr></thead>
-        <tbody>{payments.map((payment) => <tr key={payment.payment_id}>
-          <td><Link to={detailPath(payment.payment_id)}>{payment.payment_id}</Link></td>
-          <td>{payment.merchant_id}</td><td>{amount(payment.amount, payment.currency)}</td>
-          <td><DecisionBadge decision={payment.decision} /></td><td>{date(payment.ts)}</td>
-        </tr>)}</tbody>
-      </table></div>}
-    </DataView>
-    <section className="panel card activity" aria-label="Incoming events">
-      <h2>Incoming events</h2>
-      {recent.length === 0 ? <p>Waiting for the first event…</p> :
-        <ul className="feed">{recent.map((event) => <li key={event.id}>
-          <span>{event.type}</span> <Link to={detailPath(event.payment_id)}>{event.payment_id}</Link>
-          <time dateTime={event.ts}>{new Date(event.ts).toLocaleTimeString()}</time>
-        </li>)}</ul>}
-    </section>
-  </Page>;
-}
-
 function Approvals() {
   const state = useData(client.listApprovals);
   const [pending, setPending] = useState<string | null>(null);
@@ -209,9 +185,9 @@ function Benchmark() {
 
 export function App() {
   const [connected, setConnected] = useState(false);
-  const [recent, setRecent] = useState<EventEnvelope[]>([]);
+  const [ledgerEvents, setLedgerEvents] = useState<EventEnvelope[]>([]);
   useEffect(() => client.subscribeEvents((event) => {
-    setRecent((current) => [event, ...current.filter((item) => item.id !== event.id)].slice(0, 6));
+    setLedgerEvents((current) => appendEvent(current, event));
   }, undefined, setConnected), []);
 
   return <div className="shell">
@@ -227,7 +203,7 @@ export function App() {
         <Routes>
           <Route index element={<Navigate replace to="/ledger" />} />
           <Route path="/mandates" element={<Mandates />} />
-          <Route path="/ledger" element={<Ledger recent={recent} />} />
+          <Route path="/ledger" element={<Ledger events={ledgerEvents} connected={connected} />} />
           <Route path="/approvals" element={<Approvals />} />
           <Route path="/payments/:id" element={<PaymentRoute />} />
           <Route path="/benchmark" element={<Benchmark />} />

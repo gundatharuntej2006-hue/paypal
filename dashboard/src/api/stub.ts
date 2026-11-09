@@ -117,6 +117,7 @@ export const stub = {
     const listener = (event: EventEnvelope) => {
       if (!paymentId || event.payment_id === paymentId) onEvent(event);
     };
+    if (!paymentId) events.slice(-5000).forEach(listener);
     listeners.add(listener);
     onConnection?.(true);
     timer ??= window.setInterval(() => {
