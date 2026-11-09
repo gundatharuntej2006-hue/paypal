@@ -79,6 +79,16 @@ func (c *HTTPIntelClient) ScanContent(ctx context.Context, contexts []models.Sou
 	if err := json.Unmarshal(body, &scanResp); err != nil {
 		return nil, fmt.Errorf("failed to decode scan response: %w", err)
 	}
+	// Strict validation: enforce allowed verdict enum and confidence bounds
+	switch scanResp.Verdict {
+	case "clean", "injection", "unknown":
+		// valid
+	default:
+		scanResp.Verdict = "unknown"
+	}
+	if scanResp.Confidence < 0.0 || scanResp.Confidence > 1.0 {
+		scanResp.Verdict = "unknown"
+	}
 	return &scanResp, nil
 }
 
@@ -116,6 +126,16 @@ func (c *HTTPIntelClient) JudgeIntent(ctx context.Context, req models.JudgeReque
 	if err := json.Unmarshal(body, &judgeResp); err != nil {
 		return nil, fmt.Errorf("failed to decode judge response: %w", err)
 	}
+	// Strict validation: enforce allowed verdict enum and confidence bounds
+	switch judgeResp.Verdict {
+	case "aligned", "misaligned", "unknown":
+		// valid
+	default:
+		judgeResp.Verdict = "unknown"
+	}
+	if judgeResp.Confidence < 0.0 || judgeResp.Confidence > 1.0 {
+		judgeResp.Verdict = "unknown"
+	}
 	return &judgeResp, nil
 }
 
@@ -152,6 +172,19 @@ func (c *HTTPIntelClient) RiskScore(ctx context.Context, req models.RiskRequest)
 	var riskResp models.RiskResponse
 	if err := json.Unmarshal(body, &riskResp); err != nil {
 		return nil, fmt.Errorf("failed to decode risk response: %w", err)
+	}
+	// Strict validation: enforce status enum and score bounds
+	switch riskResp.Status {
+	case "ok", "unknown":
+		// valid
+	default:
+		riskResp.Status = "unknown"
+	}
+	if riskResp.Status == "ok" && riskResp.Score != nil {
+		if *riskResp.Score < 0.0 || *riskResp.Score > 1.0 {
+			riskResp.Status = "unknown"
+			riskResp.Score = nil
+		}
 	}
 	return &riskResp, nil
 }

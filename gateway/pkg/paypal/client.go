@@ -151,18 +151,28 @@ func (c *SandboxClient) doRequestWithRetry(ctx context.Context, method, endpoint
 }
 
 func (c *SandboxClient) CreateOrder(ctx context.Context, req OrderRequest) (*OrderResponse, error) {
-	payload := map[string]interface{}{
-		"intent": "AUTHORIZE",
-		"purchase_units": []map[string]interface{}{
-			{
-				"custom_id":   req.PaymentID,
-				"description": req.Description,
-				"amount": map[string]interface{}{
-					"currency_code": req.Currency,
-					"value":         req.Amount,
-				},
-			},
+	unit := map[string]interface{}{
+		"custom_id":   req.PaymentID,
+		"description": req.Description,
+		"amount": map[string]interface{}{
+			"currency_code": req.Currency,
+			"value":         req.Amount,
 		},
+	}
+	payee := map[string]interface{}{}
+	if req.PayeeEmail != "" {
+		payee["email_address"] = req.PayeeEmail
+	}
+	if req.PayeeMerchantID != "" {
+		payee["merchant_id"] = req.PayeeMerchantID
+	}
+	if len(payee) > 0 {
+		unit["payee"] = payee
+	}
+
+	payload := map[string]interface{}{
+		"intent":         "AUTHORIZE",
+		"purchase_units": []map[string]interface{}{unit},
 	}
 	data, _ := json.Marshal(payload)
 	respBytes, code, err := c.doRequestWithRetry(ctx, http.MethodPost, "/v2/checkout/orders", data, req.RequestID)

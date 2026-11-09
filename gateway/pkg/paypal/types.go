@@ -7,11 +7,13 @@ import (
 
 // OrderRequest parameters for creating an order with intent=AUTHORIZE.
 type OrderRequest struct {
-	PaymentID   string   `json:"payment_id"`
-	Amount      string   `json:"amount"`
-	Currency    string   `json:"currency"`
-	Description string   `json:"description,omitempty"`
-	RequestID   string   `json:"request_id"`
+	PaymentID       string `json:"payment_id"`
+	Amount          string `json:"amount"`
+	Currency        string `json:"currency"`
+	Description     string `json:"description,omitempty"`
+	RequestID       string `json:"request_id"`
+	PayeeEmail      string `json:"payee_email,omitempty"`       // Merchant/payee email binding
+	PayeeMerchantID string `json:"payee_merchant_id,omitempty"` // Merchant/payee PayPal account ID
 }
 
 // OrderResponse returned by PayPal Orders API.
@@ -24,11 +26,11 @@ type OrderResponse struct {
 
 // CaptureResponse returned by PayPal Capture API.
 type CaptureResponse struct {
-	ID        string `json:"id"`
-	Status    string `json:"status"` // COMPLETED, PENDING, DECLINED
-	Amount    string `json:"amount"`
-	Currency  string `json:"currency"`
-	FinalCapture bool `json:"final_capture"`
+	ID           string `json:"id"`
+	Status       string `json:"status"` // COMPLETED, PENDING, DECLINED
+	Amount       string `json:"amount"`
+	Currency     string `json:"currency"`
+	FinalCapture bool   `json:"final_capture"`
 }
 
 // VoidResponse returned by PayPal Void API.

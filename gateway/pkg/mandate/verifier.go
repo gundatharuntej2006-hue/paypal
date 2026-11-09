@@ -72,6 +72,66 @@ func (r *MemoryPrincipalRegistry) RegisterPrincipal(principalID string, publicKe
 	r.keys[principalID] = publicKeyBase64
 }
 
+// MerchantPayeeInfo holds verified PayPal payee details for a merchant.
+type MerchantPayeeInfo struct {
+	Email           string
+	PayPalAccountID string
+}
+
+// MerchantRegistry maps merchant IDs to verified PayPal payee accounts.
+type MerchantRegistry interface {
+	GetPayee(merchantID string) (MerchantPayeeInfo, error)
+	RegisterMerchant(merchantID string, info MerchantPayeeInfo)
+}
+
+// MemoryMerchantRegistry is a thread-safe in-memory merchant registry with defaults.
+type MemoryMerchantRegistry struct {
+	mu        sync.RWMutex
+	merchants map[string]MerchantPayeeInfo
+}
+
+func NewMemoryMerchantRegistry() *MemoryMerchantRegistry {
+	r := &MemoryMerchantRegistry{
+		merchants: make(map[string]MerchantPayeeInfo),
+	}
+	// Seed common test merchants
+	r.RegisterMerchant("merchant_books_123", MerchantPayeeInfo{
+		Email:           "books-seller@sandbox.agentguard.local",
+		PayPalAccountID: "PAYEE_BOOKS_123",
+	})
+	r.RegisterMerchant("merchant_electronics_456", MerchantPayeeInfo{
+		Email:           "gadgets-seller@sandbox.agentguard.local",
+		PayPalAccountID: "PAYEE_ELEC_456",
+	})
+	r.RegisterMerchant("merchant_food_789", MerchantPayeeInfo{
+		Email:           "food-seller@sandbox.agentguard.local",
+		PayPalAccountID: "PAYEE_FOOD_789",
+	})
+	return r
+}
+
+func (r *MemoryMerchantRegistry) GetPayee(merchantID string) (MerchantPayeeInfo, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	info, ok := r.merchants[strings.ToLower(strings.TrimSpace(merchantID))]
+	if !ok {
+		// Provide deterministic synthesized payee for dynamic test merchants
+		cleanID := strings.ToLower(strings.TrimSpace(merchantID))
+		return MerchantPayeeInfo{
+			Email:           fmt.Sprintf("%s@merchants.agentguard.local", cleanID),
+			PayPalAccountID: fmt.Sprintf("PAYEE_%s", strings.ToUpper(cleanID)),
+		}, nil
+	}
+	return info, nil
+}
+
+func (r *MemoryMerchantRegistry) RegisterMerchant(merchantID string, info MerchantPayeeInfo) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.merchants[strings.ToLower(strings.TrimSpace(merchantID))] = info
+}
+
 // SpentTracker looks up total cumulative spent amount for a mandate.
 type SpentTracker interface {
 	GetTotalSpent(mandateID string) (float64, error)
@@ -99,6 +159,7 @@ type Verifier struct {
 	nonceStore        NonceStore
 	spentTracker       SpentTracker
 	principalRegistry PrincipalRegistry
+	merchantRegistry  MerchantRegistry
 	strictRegistry    bool
 }
 
@@ -107,8 +168,33 @@ func NewVerifier(nonceStore NonceStore, tracker SpentTracker, registry Principal
 		nonceStore:        nonceStore,
 		spentTracker:       tracker,
 		principalRegistry: registry,
+		merchantRegistry:  NewMemoryMerchantRegistry(),
 		strictRegistry:    registry != nil,
 	}
+}
+
+// SetMerchantRegistry sets a custom merchant registry.
+func (v *Verifier) SetMerchantRegistry(mr MerchantRegistry) {
+	v.merchantRegistry = mr
+}
+
+// RegisterPrincipal registers a trusted principal key in the verifier's principal registry.
+func (v *Verifier) RegisterPrincipal(principalID string, publicKeyBase64 string) {
+	if v.principalRegistry != nil {
+		v.principalRegistry.RegisterPrincipal(principalID, publicKeyBase64)
+	}
+}
+
+// GetMerchantPayee returns the verified payee for a merchant.
+func (v *Verifier) GetMerchantPayee(merchantID string) (string, string) {
+	if v.merchantRegistry == nil {
+		return "", ""
+	}
+	info, err := v.merchantRegistry.GetPayee(merchantID)
+	if err != nil {
+		return "", ""
+	}
+	return info.Email, info.PayPalAccountID
 }
 
 // SetStrictRegistry toggles whether unregistered principals are rejected.

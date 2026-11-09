@@ -1,0 +1,399 @@
+package api
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+	"time"
+
+	"gateway/pkg/config"
+	"gateway/pkg/crypto"
+	"gateway/pkg/events"
+	"gateway/pkg/intelclient"
+	"gateway/pkg/ledger"
+	"gateway/pkg/mandate"
+	"gateway/pkg/models"
+	"gateway/pkg/paypal"
+	"gateway/pkg/policy"
+	"gateway/pkg/statemachine"
+)
+
+// setupSpyTestServer builds a test gateway server where live PayPal client is wrapped in a SpyClient.
+func setupSpyTestServer(t *testing.T) (*Server, *paypal.SpyClient, *mandate.Verifier, ledger.Ledger, http.Handler) {
+	cfg := &config.Config{
+		Env:                 "development",
+		RiskBlockThreshold:  0.65,
+		RiskStepUpThreshold: 0.35,
+	}
+
+	led := ledger.NewMemoryLedger()
+	nonceStore := mandate.NewMemoryNonceStore()
+	principalRegistry := mandate.NewMemoryPrincipalRegistry()
+	verifier := mandate.NewVerifier(nonceStore, led, principalRegistry)
+
+	sm := statemachine.NewStateMachine()
+	decConfig := policy.DecisionConfig{
+		RiskBlockThreshold:  cfg.RiskBlockThreshold,
+		RiskStepUpThreshold: cfg.RiskStepUpThreshold,
+	}
+	decEng := policy.NewDecisionEngine(decConfig)
+
+	// Live mock PayPal client wrapped in a SpyClient
+	mockPP := paypal.NewMockClient()
+	spy := paypal.NewSpyClient(mockPP)
+
+	intelStub := intelclient.NewStubIntelClient()
+	broker := events.NewBroker()
+
+	server := NewServer(cfg, led, verifier, sm, decEng, spy, intelStub, broker)
+	handler := SetupRouter(server)
+
+	return server, spy, verifier, led, handler
+}
+
+func helperCreateSignedMandate(t *testing.T, mutator func(*models.Mandate)) models.Mandate {
+	pub, priv, err := crypto.GenerateKeyPair()
+	if err != nil {
+		t.Fatalf("GenerateKeyPair error: %v", err)
+	}
+
+	m := models.Mandate{
+		MandateID:         "mdt_spy_test",
+		PrincipalID:       "principal_user_1",
+		AgentID:           "agent_shopper_1",
+		Task:              "Office supplies under budget",
+		Currency:          "USD",
+		MaxTotal:          "150.00",
+		MaxPerTxn:         "75.00",
+		StepUpOver:        "40.00",
+		AllowedMerchants:  []string{"merchant_staples", "merchant_books_123"},
+		AllowedCategories: []string{"office_supplies", "books"},
+		ValidFrom:         time.Now().Add(-1 * time.Hour),
+		ExpiresAt:         time.Now().Add(24 * time.Hour),
+		Nonce:             "nonce_" + time.Now().Format("20060102150405.000000"),
+	}
+
+	if mutator != nil {
+		mutator(&m)
+	}
+
+	err = crypto.SignMandate(priv, &m)
+	if err != nil {
+		t.Fatalf("SignMandate error: %v", err)
+	}
+	m.PublicKey = pub
+	return m
+}
+
+// Test 1: DryRun Allow Path asserts 0 live PayPal calls and 0 mandate spending
+func TestDryRunSpy_AllowPathZeroCalls(t *testing.T) {
+	_, spy, verifier, led, handler := setupSpyTestServer(t)
+
+	m := helperCreateSignedMandate(t, nil)
+	verifier.RegisterPrincipal(m.PrincipalID, m.PublicKey)
+
+	reqPayload := models.PaymentIntentRequest{
+		Mandate:        m,
+		AgentID:        m.AgentID,
+		MerchantID:     "merchant_staples",
+		MerchantName:   "Staples Office Store",
+		Amount:         "29.98",
+		Currency:       "USD",
+		Category:       "office_supplies",
+		Items:          []models.Item{{Name: "Paper Ream", Qty: 2, UnitPrice: "14.99"}},
+		AgentReasoning: "Best price office paper for task",
+		IdempotencyKey: "dryrun_allow_idemp_001",
+		DryRun:         true,
+	}
+
+	body, _ := json.Marshal(reqPayload)
+	req := httptest.NewRequest(http.MethodPost, "/v1/payments/intents", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var dec models.DecisionResponse
+	_ = json.Unmarshal(w.Body.Bytes(), &dec)
+
+	if dec.Decision != models.DecisionAllow {
+		t.Fatalf("expected allow, got %s (reasons: %v)", dec.Decision, dec.Reasons)
+	}
+	if !dec.DryRun {
+		t.Fatalf("expected DryRun=true in decision response")
+	}
+
+	// ASSERTION: Zero calls to live PayPal client across all operations
+	if spy.TotalCalls() != 0 {
+		t.Fatalf("VIOLATION: spy recorded %d live calls (expected 0 calls in dry-run mode)", spy.TotalCalls())
+	}
+
+	// ASSERTION: Mandate total spent must remain 0.00
+	totalSpent, err := led.GetTotalSpent(m.MandateID)
+	if err != nil {
+		t.Fatalf("GetTotalSpent error: %v", err)
+	}
+	if totalSpent != 0.00 {
+		t.Fatalf("VIOLATION: dry-run payment altered mandate spending to %.2f (expected 0.00)", totalSpent)
+	}
+}
+
+// Test 2: DryRun Step-Up and Human Approval asserts ZERO live PayPal calls throughout the full lifecycle
+func TestDryRunSpy_StepUpAndApprovalZeroCalls(t *testing.T) {
+	_, spy, verifier, led, handler := setupSpyTestServer(t)
+
+	m := helperCreateSignedMandate(t, nil)
+	verifier.RegisterPrincipal(m.PrincipalID, m.PublicKey)
+
+	// Amount 49.98 exceeds StepUpOver ($40.00) -> triggers step_up
+	reqPayload := models.PaymentIntentRequest{
+		Mandate:        m,
+		AgentID:        m.AgentID,
+		MerchantID:     "merchant_staples",
+		Amount:         "49.98",
+		Currency:       "USD",
+		Category:       "office_supplies",
+		Items:          []models.Item{{Name: "Desk Lamp", Qty: 2, UnitPrice: "24.99"}},
+		AgentReasoning: "Desk lamp requested",
+		IdempotencyKey: "dryrun_stepup_idemp_002",
+		DryRun:         true,
+	}
+
+	body, _ := json.Marshal(reqPayload)
+	req := httptest.NewRequest(http.MethodPost, "/v1/payments/intents", bytes.NewBuffer(body))
+	req.Header.Set("Content-Type", "application/json")
+	w := httptest.NewRecorder()
+
+	handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", w.Code, w.Body.String())
+	}
+
+	var dec models.DecisionResponse
+	_ = json.Unmarshal(w.Body.Bytes(), &dec)
+
+	if dec.Decision != models.DecisionStepUp {
+		t.Fatalf("expected step_up, got %s", dec.Decision)
+	}
+	if dec.StepUpToken == "" {
+		t.Fatalf("expected step_up_token in dry-run step-up response")
+	}
+
+	// ASSERTION: Zero calls during intent step-up
+	if spy.TotalCalls() != 0 {
+		t.Fatalf("VIOLATION: spy recorded %d calls during step-up creation", spy.TotalCalls())
+	}
+
+	// Now call POST /v1/payments/{id}/approve (Tharun Finding 1: must NOT touch live PayPal capture)
+	apprBody, _ := json.Marshal(models.StepUpApprovalRequest{StepUpToken: dec.StepUpToken})
+	apprReq := httptest.NewRequest(http.MethodPost, "/v1/payments/"+dec.PaymentID+"/approve", bytes.NewBuffer(apprBody))
+	apprReq.Header.Set("Content-Type", "application/json")
+	apprW := httptest.NewRecorder()
+
+	handler.ServeHTTP(apprW, apprReq)
+
+	if apprW.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on approve, got %d: %s", apprW.Code, apprW.Body.String())
+	}
+
+	var apprResp map[string]interface{}
+	_ = json.Unmarshal(apprW.Body.Bytes(), &apprResp)
+
+	if apprResp["status"] != "approved" || apprResp["decision"] != "allow" {
+		t.Fatalf("unexpected approve response: %+v", apprResp)
+	}
+
+	// CRITICAL ASSERTION: Zero calls to live PayPal during human approval of dry-run payment!
+	if spy.TotalCalls() != 0 {
+		t.Fatalf("CRITICAL SECURITY VIOLATION: live PayPal client was invoked %d times during dry-run approval!", spy.TotalCalls())
+	}
+
+	// ASSERTION: Mandate total spent must remain 0.00
+	totalSpent, _ := led.GetTotalSpent(m.MandateID)
+	if totalSpent != 0.00 {
+		t.Fatalf("VIOLATION: dry-run approval altered mandate spending to %.2f (expected 0.00)", totalSpent)
+	}
+
+	// Verify projection state
+	proj, err := led.GetPaymentProjection(context.Background(), dec.PaymentID)
+	if err != nil {
+		t.Fatalf("GetPaymentProjection error: %v", err)
+	}
+	if !proj.IsDryRun {
+		t.Fatalf("expected proj.IsDryRun=true")
+	}
+	if !proj.StepUpConsumed {
+		t.Fatalf("expected proj.StepUpConsumed=true after approval")
+	}
+
+	// Re-approval attempt with consumed token must return 409 Conflict
+	reApprW := httptest.NewRecorder()
+	reApprReq := httptest.NewRequest(http.MethodPost, "/v1/payments/"+dec.PaymentID+"/approve", bytes.NewBuffer(apprBody))
+	reApprReq.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(reApprW, reApprReq)
+
+	if reApprW.Code != http.StatusConflict && reApprW.Code != http.StatusBadRequest {
+		t.Fatalf("expected 409 Conflict on consumed token replay, got %d: %s", reApprW.Code, reApprW.Body.String())
+	}
+}
+
+// Test 3: DryRun Step-Up Rejection asserts zero live PayPal calls
+func TestDryRunSpy_StepUpAndRejectionZeroCalls(t *testing.T) {
+	_, spy, verifier, _, handler := setupSpyTestServer(t)
+
+	m := helperCreateSignedMandate(t, nil)
+	verifier.RegisterPrincipal(m.PrincipalID, m.PublicKey)
+
+	reqPayload := models.PaymentIntentRequest{
+		Mandate:        m,
+		AgentID:        m.AgentID,
+		MerchantID:     "merchant_staples",
+		Amount:         "49.98",
+		Currency:       "USD",
+		Category:       "office_supplies",
+		Items:          []models.Item{{Name: "Desk Lamp", Qty: 2, UnitPrice: "24.99"}},
+		AgentReasoning: "Desk lamp requested",
+		IdempotencyKey: "dryrun_reject_idemp_003",
+		DryRun:         true,
+	}
+
+	body, _ := json.Marshal(reqPayload)
+	req := httptest.NewRequest(http.MethodPost, "/v1/payments/intents", bytes.NewBuffer(body))
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, req)
+
+	var dec models.DecisionResponse
+	_ = json.Unmarshal(w.Body.Bytes(), &dec)
+
+	// Call POST /v1/payments/{id}/reject
+	rejReq := httptest.NewRequest(http.MethodPost, "/v1/payments/"+dec.PaymentID+"/reject", nil)
+	rejW := httptest.NewRecorder()
+	handler.ServeHTTP(rejW, rejReq)
+
+	if rejW.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK on reject, got %d: %s", rejW.Code, rejW.Body.String())
+	}
+
+	// ASSERTION: Zero calls to live PayPal
+	if spy.TotalCalls() != 0 {
+		t.Fatalf("VIOLATION: spy recorded %d calls during dry-run rejection", spy.TotalCalls())
+	}
+}
+
+// Test 4: Idempotency Partitioning: dryrun and live namespaces do not collide
+func TestDryRunSpy_IdempotencyNamespaceIsolation(t *testing.T) {
+	_, spy, verifier, _, handler := setupSpyTestServer(t)
+
+	m := helperCreateSignedMandate(t, nil)
+	verifier.RegisterPrincipal(m.PrincipalID, m.PublicKey)
+
+	sharedKey := "shared_idemp_key_999"
+
+	// 1. Submit as DryRun
+	reqDryRun := models.PaymentIntentRequest{
+		Mandate:        m,
+		AgentID:        m.AgentID,
+		MerchantID:     "merchant_staples",
+		Amount:         "29.98",
+		Currency:       "USD",
+		Category:       "office_supplies",
+		Items:          []models.Item{{Name: "Paper Ream", Qty: 2, UnitPrice: "14.99"}},
+		AgentReasoning: "Dry run test",
+		IdempotencyKey: sharedKey,
+		DryRun:         true,
+	}
+	bodyDry, _ := json.Marshal(reqDryRun)
+	wDry := httptest.NewRecorder()
+	handler.ServeHTTP(wDry, httptest.NewRequest(http.MethodPost, "/v1/payments/intents", bytes.NewBuffer(bodyDry)))
+
+	var decDry models.DecisionResponse
+	_ = json.Unmarshal(wDry.Body.Bytes(), &decDry)
+	if !decDry.DryRun {
+		t.Fatalf("expected decDry.DryRun=true")
+	}
+	if spy.TotalCalls() != 0 {
+		t.Fatalf("expected 0 spy calls on dry run")
+	}
+
+	// 2. Submit same idempotency key as LIVE
+	// Need fresh nonce for mandate
+	mLive := helperCreateSignedMandate(t, func(m *models.Mandate) {
+		m.Nonce = "nonce_live_fresh_" + time.Now().Format("150405.000000")
+	})
+	verifier.RegisterPrincipal(mLive.PrincipalID, mLive.PublicKey)
+
+	reqLive := models.PaymentIntentRequest{
+		Mandate:        mLive,
+		AgentID:        mLive.AgentID,
+		MerchantID:     "merchant_staples",
+		Amount:         "29.98",
+		Currency:       "USD",
+		Category:       "office_supplies",
+		Items:          []models.Item{{Name: "Paper Ream", Qty: 2, UnitPrice: "14.99"}},
+		AgentReasoning: "Live execution with same idempotency key",
+		IdempotencyKey: sharedKey,
+		DryRun:         false,
+	}
+	bodyLive, _ := json.Marshal(reqLive)
+	wLive := httptest.NewRecorder()
+	handler.ServeHTTP(wLive, httptest.NewRequest(http.MethodPost, "/v1/payments/intents", bytes.NewBuffer(bodyLive)))
+
+	var decLive models.DecisionResponse
+	_ = json.Unmarshal(wLive.Body.Bytes(), &decLive)
+
+	// Live request must NOT have retrieved the dry-run cached decision
+	if decLive.DryRun {
+		t.Fatalf("VIOLATION: live request retrieved cached dry-run decision across namespaces!")
+	}
+	if decLive.PaymentID == decDry.PaymentID {
+		t.Fatalf("VIOLATION: live and dry-run payments shared payment ID %s", decLive.PaymentID)
+	}
+
+	// In live mode, spy should have recorded live PayPal operations (CreateOrder, AuthorizeOrder, Capture)
+	if spy.TotalCalls() == 0 {
+		t.Fatalf("expected live request to invoke paypal operations, got 0")
+	}
+}
+
+// Test 5: Merchant Payee Binding in Live Mode
+func TestMerchantPayeeBindingLiveMode(t *testing.T) {
+	_, spy, verifier, _, handler := setupSpyTestServer(t)
+
+	m := helperCreateSignedMandate(t, nil)
+	verifier.RegisterPrincipal(m.PrincipalID, m.PublicKey)
+
+	reqLive := models.PaymentIntentRequest{
+		Mandate:        m,
+		AgentID:        m.AgentID,
+		MerchantID:     "merchant_books_123",
+		Amount:         "19.99",
+		Currency:       "USD",
+		Category:       "books",
+		Items:          []models.Item{{Name: "Go Programming Book", Qty: 1, UnitPrice: "19.99"}},
+		AgentReasoning: "Required textbook",
+		IdempotencyKey: "payee_binding_live_001",
+		DryRun:         false,
+	}
+
+	body, _ := json.Marshal(reqLive)
+	w := httptest.NewRecorder()
+	handler.ServeHTTP(w, httptest.NewRequest(http.MethodPost, "/v1/payments/intents", bytes.NewBuffer(body)))
+
+	if w.Code != http.StatusOK {
+		t.Fatalf("expected 200 OK, got %d: %s", w.Code, w.Body.String())
+	}
+
+	// Verify that live paypal calls were made
+	if spy.CreateOrderCalls != 1 || spy.AuthorizeOrderCalls != 1 || spy.CaptureCalls != 1 {
+		t.Fatalf("expected 1 CreateOrder, 1 Authorize, 1 Capture, got: Create=%d, Auth=%d, Cap=%d",
+			spy.CreateOrderCalls, spy.AuthorizeOrderCalls, spy.CaptureCalls)
+	}
+}

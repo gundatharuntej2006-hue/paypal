@@ -145,6 +145,8 @@ type PaymentProjection struct {
 	RiskScore        float64      `json:"risk_score"`
 	StepUpToken      string       `json:"step_up_token,omitempty"`
 	StepUpExpiresAt  *time.Time   `json:"step_up_expires_at,omitempty"`
+	StepUpConsumed   bool         `json:"step_up_consumed"`
+	IsDryRun         bool         `json:"is_dry_run"`
 	PayPalOrderID    string       `json:"paypal_order_id,omitempty"`
 	PayPalAuthID     string       `json:"paypal_auth_id,omitempty"`
 	PayPalCaptureID  string       `json:"paypal_capture_id,omitempty"`

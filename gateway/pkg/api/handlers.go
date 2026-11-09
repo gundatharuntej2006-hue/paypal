@@ -31,6 +31,7 @@ type Server struct {
 	stateMachine *statemachine.StateMachine
 	decisionEng  *policy.DecisionEngine
 	paypalClient paypal.Client
+	dryRunClient paypal.Client
 	intelClient  intelclient.IntelClient
 	broker       *events.Broker
 }
@@ -52,9 +53,15 @@ func NewServer(
 		stateMachine: sm,
 		decisionEng:  de,
 		paypalClient: pp,
+		dryRunClient: paypal.NewDryRunClient(),
 		intelClient:  intel,
 		broker:       broker,
 	}
+}
+
+// SetDryRunClient allows tests to inject an instrumented dry-run client.
+func (s *Server) SetDryRunClient(c paypal.Client) {
+	s.dryRunClient = c
 }
 
 // emit records an event in the ledger and broadcasts it to the SSE broker.
@@ -98,7 +105,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handlePaymentIntent(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	// Fix 1: Caller Authentication for Agents (if AGENT_AUTH_TOKEN is configured)
+	// Fix 1 & 5: Caller Authentication for Agents
 	if s.cfg.AgentAuthToken != "" {
 		authHeader := r.Header.Get("Authorization")
 		apiKeyHeader := r.Header.Get("X-Agent-Key")
@@ -113,6 +120,9 @@ func (s *Server) handlePaymentIntent(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "unauthorized agent caller: invalid or missing authentication token", http.StatusUnauthorized)
 			return
 		}
+	} else if s.cfg.Env == "production" {
+		http.Error(w, "unauthorized agent caller: agent authentication token required in production", http.StatusUnauthorized)
+		return
 	}
 
 	// Read body with 2MB limit
@@ -129,9 +139,15 @@ func (s *Server) handlePaymentIntent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Fix 6: Agent identity derivation and verification against authenticated caller
+	headerAgentID := strings.TrimSpace(r.Header.Get("X-Agent-ID"))
 	if req.AgentID == "" {
-		req.AgentID = r.Header.Get("X-Agent-ID")
+		req.AgentID = headerAgentID
+	} else if headerAgentID != "" && req.AgentID != headerAgentID {
+		http.Error(w, fmt.Sprintf("agent identity mismatch: body agent '%s' != header agent '%s'", req.AgentID, headerAgentID), http.StatusBadRequest)
+		return
 	}
+
 	isDryRun := req.DryRun || r.Header.Get("X-Dry-Run") == "true" || r.URL.Query().Get("dry_run") == "true"
 
 	// Fix 5: Empty idempotency key rejection
@@ -141,8 +157,15 @@ func (s *Server) handlePaymentIntent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Fix 3 & 4: Dedicated idempotency namespace for dry-run vs live requests
+	modePrefix := "live:"
+	if isDryRun {
+		modePrefix = "dryrun:"
+	}
+	namespacedKey := modePrefix + idempKey
+
 	// Fix 5: Reliable Idempotency Recovery - return original cached decision if seen
-	if cachedDec, err := s.ledger.GetDecisionByIdempotencyKey(ctx, idempKey); err == nil && cachedDec != nil {
+	if cachedDec, err := s.ledger.GetDecisionByIdempotencyKey(ctx, namespacedKey); err == nil && cachedDec != nil {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("X-Cache-Lookup", "HIT")
 		w.WriteHeader(http.StatusOK)
@@ -172,8 +195,8 @@ func (s *Server) handlePaymentIntent(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// 1. Record intent.received
-	intentEventKey := "intent:" + idempKey
+	// 1. Record intent.received with dry_run flag in event data
+	intentEventKey := "intent:" + namespacedKey
 	intentEvt, err := s.emit(ctx, "intent.received", &paymentID, &req.Mandate.MandateID, &intentEventKey, "gateway", map[string]interface{}{
 		"merchant_id":     req.MerchantID,
 		"merchant_name":   req.MerchantName,
@@ -182,6 +205,7 @@ func (s *Server) handlePaymentIntent(w http.ResponseWriter, r *http.Request) {
 		"items_count":     len(req.Items),
 		"agent_reasoning": req.AgentReasoning,
 		"contexts_count":  len(req.SourceContexts),
+		"dry_run":         isDryRun,
 	})
 	if err != nil {
 		if errors.Is(err, ledger.ErrDuplicateEvent) {
@@ -223,10 +247,11 @@ func (s *Server) handlePaymentIntent(w http.ResponseWriter, r *http.Request) {
 				Risk:      "unknown",
 			},
 			AuditEventID: auditID,
+			DryRun:       isDryRun,
 		}
 
-		// Cache decision for idempotent retry recovery
-		_ = s.ledger.SaveDecisionIdempotency(ctx, idempKey, &decision)
+		// Cache decision for idempotent retry recovery under namespaced key
+		_ = s.ledger.SaveDecisionIdempotency(ctx, namespacedKey, &decision)
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
@@ -243,8 +268,8 @@ func (s *Server) handlePaymentIntent(w http.ResponseWriter, r *http.Request) {
 	// 3. Scanning state & Intelligence calls
 	_ = s.stateMachine.Transition(paymentID, statemachine.StateScanning)
 
-	// Atul Point 3: Query previous payments under this MANDATE (excluding current paymentID)
-	// Must include merchant_id, amount, currency, ts, and decision (allow, step_up, block, or pending)
+	// Atul Point 3 & Tharun Isolation: Query previous payments under this MANDATE
+	// Must exclude current paymentID, and exclude dry-run transactions from live risk history
 	riskHistory := []models.RiskHistoryItem{}
 	mandateEvents, err := s.ledger.GetEventsByMandate(ctx, req.Mandate.MandateID)
 	if err == nil {
@@ -261,6 +286,20 @@ func (s *Server) handlePaymentIntent(w http.ResponseWriter, r *http.Request) {
 			if e.PaymentID == nil || *e.PaymentID == paymentID {
 				continue // skip current payment
 			}
+
+			var d map[string]interface{}
+			_ = json.Unmarshal(e.Data, &d)
+
+			// Exclude dry-run payments from live risk history to prevent pollution
+			if !isDryRun {
+				if dDryRun, ok := d["dry_run"].(bool); ok && dDryRun {
+					continue
+				}
+				if e.Source == "dry_run" {
+					continue
+				}
+			}
+
 			pid := *e.PaymentID
 			summary, exists := summaryByPID[pid]
 			if !exists {
@@ -270,9 +309,6 @@ func (s *Server) handlePaymentIntent(w http.ResponseWriter, r *http.Request) {
 				}
 				summaryByPID[pid] = summary
 			}
-
-			var d map[string]interface{}
-			_ = json.Unmarshal(e.Data, &d)
 
 			switch e.Type {
 			case "intent.received":
@@ -350,22 +386,47 @@ func (s *Server) handlePaymentIntent(w http.ResponseWriter, r *http.Request) {
 		decision.AuditEventID = decEvt.ID
 	}
 
-	// 5. Execute decision with PayPal (Fix 3: Payer consent verification / order linkage, with DryRun support)
+	// Resolve verified merchant payee binding (Fix 8)
+	payeeEmail, payeeMerchantID := s.verifier.GetMerchantPayee(req.MerchantID)
+
+	// 5. Execute decision (Tharun requirement: separate payment-client interface for DryRun vs Live)
 	if isDryRun {
 		switch decision.Decision {
 		case models.DecisionAllow:
+			// Fully isolated dry-run order, authorization and capture via dryRunClient
+			orderResp, _ := s.dryRunClient.CreateOrder(ctx, paypal.OrderRequest{
+				PaymentID:       paymentID,
+				Amount:          req.Amount,
+				Currency:        req.Currency,
+				Description:     fmt.Sprintf("DryRun AgentGuard Payment: %s", req.Mandate.Task),
+				RequestID:       "dryrun_order:" + paymentID,
+				PayeeEmail:      payeeEmail,
+				PayeeMerchantID: payeeMerchantID,
+			})
+			authID, _ := s.dryRunClient.AuthorizeOrder(ctx, orderResp.ID, "dryrun_auth:"+paymentID)
+			capResp, _ := s.dryRunClient.CaptureAuthorization(ctx, authID, req.Amount, req.Currency, true, "dryrun_cap:"+paymentID)
+
 			_ = s.stateMachine.Transition(paymentID, statemachine.StateAuthorized)
 			_ = s.stateMachine.Transition(paymentID, statemachine.StateCaptured)
-			_, _ = s.emit(ctx, "paypal.captured", &paymentID, &req.Mandate.MandateID, nil, "dry_run", map[string]interface{}{
-				"dry_run":  true,
-				"amount":   req.Amount,
-				"currency": req.Currency,
+
+			_, _ = s.emit(ctx, "paypal.order_created", &paymentID, &req.Mandate.MandateID, nil, "dry_run", orderResp)
+			_, _ = s.emit(ctx, "paypal.authorized", &paymentID, &req.Mandate.MandateID, nil, "dry_run", map[string]interface{}{
+				"order_id":         orderResp.ID,
+				"authorization_id": authID,
+				"dry_run":          true,
 			})
+			_, _ = s.emit(ctx, "paypal.captured", &paymentID, &req.Mandate.MandateID, nil, "dry_run", map[string]interface{}{
+				"capture_id": capResp.ID,
+				"dry_run":    true,
+				"amount":     req.Amount,
+				"currency":   req.Currency,
+			})
+
 			decision.PayPal = &models.PayPalDetails{
-				OrderID:         "DRY_RUN_ORDER_" + paymentID,
-				AuthorizationID: "DRY_RUN_AUTH_" + paymentID,
-				CaptureID:       "DRY_RUN_CAP_" + paymentID,
-				ApprovalURL:     "https://sandbox.agentguard.local/dryrun-approve",
+				OrderID:         orderResp.ID,
+				AuthorizationID: authID,
+				CaptureID:       capResp.ID,
+				ApprovalURL:     orderResp.ApprovalURL,
 			}
 
 		case models.DecisionStepUp:
@@ -373,13 +434,26 @@ func (s *Server) handlePaymentIntent(w http.ResponseWriter, r *http.Request) {
 			stepUpToken := "stepup_dryrun_" + uuid.New().String()[:12]
 			expiresAt := time.Now().UTC().Add(15 * time.Minute)
 			decision.StepUpToken = stepUpToken
+
+			orderResp, _ := s.dryRunClient.CreateOrder(ctx, paypal.OrderRequest{
+				PaymentID:       paymentID,
+				Amount:          req.Amount,
+				Currency:        req.Currency,
+				Description:     fmt.Sprintf("DryRun Step-Up Required: %s", req.Mandate.Task),
+				RequestID:       "dryrun_stepup_order:" + paymentID,
+				PayeeEmail:      payeeEmail,
+				PayeeMerchantID: payeeMerchantID,
+			})
+
 			decision.PayPal = &models.PayPalDetails{
-				OrderID:     "DRY_RUN_ORDER_" + paymentID,
-				ApprovalURL: "https://sandbox.agentguard.local/dryrun-stepup?token=" + stepUpToken,
+				OrderID:     orderResp.ID,
+				ApprovalURL: orderResp.ApprovalURL,
 			}
+			_, _ = s.emit(ctx, "paypal.order_created", &paymentID, &req.Mandate.MandateID, nil, "dry_run", orderResp)
 			_, _ = s.emit(ctx, "payment.step_up_token_issued", &paymentID, &req.Mandate.MandateID, nil, "dry_run", map[string]interface{}{
 				"step_up_token":      stepUpToken,
 				"step_up_expires_at": expiresAt.Format(time.RFC3339),
+				"dry_run":            true,
 			})
 
 		case models.DecisionBlock:
@@ -387,19 +461,22 @@ func (s *Server) handlePaymentIntent(w http.ResponseWriter, r *http.Request) {
 			decision.PayPal = nil
 		}
 	} else {
+		// Live payment execution via live paypalClient
 		switch decision.Decision {
 		case models.DecisionAllow:
 			orderID := req.Mandate.PayPalOrderID
 			approvalURL := ""
 
-			// If no pre-approved order attached to mandate, create an order with intent=AUTHORIZE
+			// If no pre-approved order attached to mandate, create an order with intent=AUTHORIZE & bound payee
 			if orderID == "" {
 				orderResp, err := s.paypalClient.CreateOrder(ctx, paypal.OrderRequest{
-					PaymentID:   paymentID,
-					Amount:      req.Amount,
-					Currency:    req.Currency,
-					Description: fmt.Sprintf("AgentGuard Payment: %s", req.Mandate.Task),
-					RequestID:   "order:" + paymentID,
+					PaymentID:       paymentID,
+					Amount:          req.Amount,
+					Currency:        req.Currency,
+					Description:     fmt.Sprintf("AgentGuard Payment: %s", req.Mandate.Task),
+					RequestID:       "order:" + paymentID,
+					PayeeEmail:      payeeEmail,
+					PayeeMerchantID: payeeMerchantID,
 				})
 				if err != nil {
 					log.Printf("[gateway] paypal CreateOrder error: %v", err)
@@ -448,11 +525,13 @@ func (s *Server) handlePaymentIntent(w http.ResponseWriter, r *http.Request) {
 			decision.StepUpToken = stepUpToken
 
 			orderResp, err := s.paypalClient.CreateOrder(ctx, paypal.OrderRequest{
-				PaymentID:   paymentID,
-				Amount:      req.Amount,
-				Currency:    req.Currency,
-				Description: fmt.Sprintf("Human Step-Up Approval Required: %s", req.Mandate.Task),
-				RequestID:   "stepup_order:" + paymentID,
+				PaymentID:       paymentID,
+				Amount:          req.Amount,
+				Currency:        req.Currency,
+				Description:     fmt.Sprintf("Human Step-Up Approval Required: %s", req.Mandate.Task),
+				RequestID:       "stepup_order:" + paymentID,
+				PayeeEmail:      payeeEmail,
+				PayeeMerchantID: payeeMerchantID,
 			})
 			approvalURL := ""
 			orderID := ""
@@ -479,15 +558,15 @@ func (s *Server) handlePaymentIntent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Fix 5: Cache the final decision under the idempotency key for safe replay
-	_ = s.ledger.SaveDecisionIdempotency(ctx, idempKey, &decision)
+	// Fix 5: Cache the final decision under the namespaced idempotency key for safe replay
+	_ = s.ledger.SaveDecisionIdempotency(ctx, namespacedKey, &decision)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(decision)
 }
 
-// Fix 4: Hardened Human Step-Up Approval
+// Fix 4 & 7: Hardened Human Step-Up Approval with dry-run isolation & single-use token consumption
 func (s *Server) handleApprovePayment(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	paymentID := r.PathValue("id")
@@ -496,13 +575,16 @@ func (s *Server) handleApprovePayment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Caller Authentication for Human approvals (if HUMAN_AUTH_TOKEN configured)
+	// Caller Authentication for Human approvals
 	if s.cfg.HumanAuthToken != "" {
 		authHeader := r.Header.Get("Authorization")
 		if authHeader != "Bearer "+s.cfg.HumanAuthToken {
-			http.Error(w, "unauthorized human approver", http.StatusUnauthorized)
+			http.Error(w, "unauthorized human approver: invalid token", http.StatusUnauthorized)
 			return
 		}
+	} else if s.cfg.Env == "production" {
+		http.Error(w, "unauthorized human approver: token required in production", http.StatusUnauthorized)
+		return
 	}
 
 	var approvalReq models.StepUpApprovalRequest
@@ -522,7 +604,13 @@ func (s *Server) handleApprovePayment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Fix 4: Validate step_up_token
+	// Single-use token consumption protection
+	if proj.StepUpConsumed {
+		http.Error(w, "step_up_token has already been consumed", http.StatusConflict)
+		return
+	}
+
+	// Validate step_up_token and expiry
 	if proj.StepUpToken != "" {
 		sentToken := approvalReq.StepUpToken
 		if sentToken == "" {
@@ -532,13 +620,54 @@ func (s *Server) handleApprovePayment(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "invalid or missing step_up_token for human approval", http.StatusForbidden)
 			return
 		}
-		if proj.StepUpExpiresAt != nil && time.Now().After(*proj.StepUpExpiresAt) {
+		if proj.StepUpExpiresAt != nil && time.Now().UTC().After(*proj.StepUpExpiresAt) {
 			http.Error(w, "step_up_token has expired (15-minute validity window)", http.StatusForbidden)
 			return
 		}
 	}
 
-	// Authorize order if not yet authorized
+	// Point 1 & 4: Dry-Run Isolation on step-up approval route
+	if proj.IsDryRun {
+		authID := proj.PayPalAuthID
+		if authID == "" && proj.PayPalOrderID != "" {
+			authID, _ = s.dryRunClient.AuthorizeOrder(ctx, proj.PayPalOrderID, "dryrun_auth_stepup:"+paymentID)
+		}
+		if authID == "" {
+			authID = "DRYRUN_AUTH_STEPUP_" + paymentID
+		}
+		_ = s.stateMachine.Transition(paymentID, statemachine.StateAuthorized)
+
+		capResp, _ := s.dryRunClient.CaptureAuthorization(ctx, authID, proj.Amount, proj.Currency, true, "dryrun_cap_stepup:"+paymentID)
+		_ = s.stateMachine.Transition(paymentID, statemachine.StateCaptured)
+
+		// Mark token consumed and record dry-run approval
+		_, _ = s.emit(ctx, "payment.step_up_token_consumed", &paymentID, &proj.MandateID, nil, "dry_run", map[string]interface{}{
+			"payment_id": paymentID,
+		})
+		_, _ = s.emit(ctx, "human.approved", &paymentID, &proj.MandateID, nil, "dry_run", map[string]interface{}{
+			"approved_by": "human_principal",
+			"payment_id":  paymentID,
+			"dry_run":     true,
+		})
+		_, _ = s.emit(ctx, "paypal.captured", &paymentID, &proj.MandateID, nil, "dry_run", map[string]interface{}{
+			"capture_id": capResp.ID,
+			"amount":     proj.Amount,
+			"currency":   proj.Currency,
+			"dry_run":    true,
+		})
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"payment_id": paymentID,
+			"status":     "approved",
+			"decision":   "allow",
+			"capture_id": capResp.ID,
+			"dry_run":    true,
+		})
+		return
+	}
+
+	// Live Route: Authorize order if not yet authorized
 	authID := proj.PayPalAuthID
 	if authID == "" && proj.PayPalOrderID != "" {
 		authorizedID, authErr := s.paypalClient.AuthorizeOrder(ctx, proj.PayPalOrderID, "auth_stepup:"+paymentID)
@@ -568,6 +697,9 @@ func (s *Server) handleApprovePayment(w http.ResponseWriter, r *http.Request) {
 
 	// All succeeded
 	_ = s.stateMachine.Transition(paymentID, statemachine.StateCaptured)
+	_, _ = s.emit(ctx, "payment.step_up_token_consumed", &paymentID, &proj.MandateID, nil, "human", map[string]interface{}{
+		"payment_id": paymentID,
+	})
 	_, _ = s.emit(ctx, "human.approved", &paymentID, &proj.MandateID, nil, "human", map[string]interface{}{
 		"approved_by": "human_principal",
 		"payment_id":  paymentID,
@@ -591,6 +723,18 @@ func (s *Server) handleRejectPayment(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Caller Authentication for Human rejection
+	if s.cfg.HumanAuthToken != "" {
+		authHeader := r.Header.Get("Authorization")
+		if authHeader != "Bearer "+s.cfg.HumanAuthToken {
+			http.Error(w, "unauthorized human approver: invalid token", http.StatusUnauthorized)
+			return
+		}
+	} else if s.cfg.Env == "production" {
+		http.Error(w, "unauthorized human approver: token required in production", http.StatusUnauthorized)
+		return
+	}
+
 	proj, err := s.ledger.GetPaymentProjection(ctx, paymentID)
 	if err != nil {
 		http.Error(w, "payment projection not found", http.StatusNotFound)
@@ -598,6 +742,41 @@ func (s *Server) handleRejectPayment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	_ = s.stateMachine.Transition(paymentID, statemachine.StateRejected)
+
+	if proj.IsDryRun {
+		// Dry run rejection
+		_, _ = s.emit(ctx, "payment.step_up_token_consumed", &paymentID, &proj.MandateID, nil, "dry_run", map[string]interface{}{
+			"payment_id": paymentID,
+		})
+		_, _ = s.emit(ctx, "human.rejected", &paymentID, &proj.MandateID, nil, "dry_run", map[string]interface{}{
+			"rejected_by": "human_principal",
+			"payment_id":  paymentID,
+			"dry_run":     true,
+		})
+
+		if proj.PayPalAuthID != "" {
+			_, _ = s.dryRunClient.VoidAuthorization(ctx, proj.PayPalAuthID, "dryrun_void_stepup:"+paymentID)
+			_ = s.stateMachine.Transition(paymentID, statemachine.StateVoided)
+			_, _ = s.emit(ctx, "paypal.voided", &paymentID, &proj.MandateID, nil, "dry_run", map[string]interface{}{
+				"authorization_id": proj.PayPalAuthID,
+				"dry_run":          true,
+			})
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"payment_id": paymentID,
+			"status":     "rejected",
+			"decision":   "block",
+			"dry_run":    true,
+		})
+		return
+	}
+
+	// Live Route
+	_, _ = s.emit(ctx, "payment.step_up_token_consumed", &paymentID, &proj.MandateID, nil, "human", map[string]interface{}{
+		"payment_id": paymentID,
+	})
 	_, _ = s.emit(ctx, "human.rejected", &paymentID, &proj.MandateID, nil, "human", map[string]interface{}{
 		"rejected_by": "human_principal",
 		"payment_id":  paymentID,
