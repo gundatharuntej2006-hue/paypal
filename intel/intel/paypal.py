@@ -9,7 +9,11 @@ import json
 import time
 import zlib
 from collections.abc import Mapping
-from datetime import UTC, datetime
+from datetime import datetime, timezone
+try:
+    from datetime import UTC
+except ImportError:
+    UTC = timezone.utc
 from functools import lru_cache
 from urllib.parse import urlsplit
 

@@ -43,7 +43,7 @@ async def run_signal(handler: Handler, req: object, unknown: Callable[[str], R],
     start = time.perf_counter()
     try:
         result = await asyncio.wait_for(handler(req), timeout=deadline_s)
-    except TimeoutError:
+    except (TimeoutError, asyncio.TimeoutError):
         result = unknown("timeout")
     except NotImplementedError:
         result = unknown("not_implemented")

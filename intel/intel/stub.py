@@ -5,7 +5,11 @@ Enabled with INTEL_MODE=stub. Triggers are listed in the README.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
+try:
+    from datetime import UTC
+except ImportError:
+    UTC = timezone.utc
 from decimal import Decimal
 
 from intel.models import (

@@ -9,7 +9,11 @@ from __future__ import annotations
 import os
 import re
 import unicodedata
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
+try:
+    from datetime import UTC
+except ImportError:
+    UTC = timezone.utc
 from decimal import Decimal
 
 from intel.models import Factor, RiskRequest, RiskResponse

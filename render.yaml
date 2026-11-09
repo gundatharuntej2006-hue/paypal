@@ -95,15 +95,8 @@ services:
     startCommand: npx serve -s dist -l $PORT
     envVars:
       - key: VITE_GATEWAY_URL
-        fromService:
-          type: web
-          name: agentguard-gateway
-          property: hostport
-      - key: VITE_INTEL_URL
-        fromService:
-          type: web
-          name: agentguard-intel
-          property: hostport
+        # Public gateway URL reachable from the user's browser (e.g. https://agentguard-gateway.onrender.com)
+        sync: false
 
 databases:
   # -------------------------------------------------------------
