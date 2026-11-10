@@ -767,3 +767,87 @@ shared dashboard contract. Reports intentionally omit raw HTML, injected payload
 tasks and exception messages; retain sensitive evidence only through an agreed
 future evidence-storage design. Neither the agent nor runner should possess
 PayPal credentials or call intelligence endpoints directly.
+
+## Dashboard summary adapter and contract examples
+
+`benchmark.dashboard.dashboard_summary(rich_report)` returns the separately agreed
+dashboard object. It is a pure adapter: no network, payment submission, file
+output or mutation of its input. The existing rich report, executor, JSON and
+Markdown serializers and scenario definitions are unchanged. No genuine
+benchmark executor or HTTP endpoint is added.
+
+```python
+from agentguard_workstream_c.benchmark.dashboard import dashboard_summary
+from agentguard_workstream_c.benchmark.reporter import json_report
+
+summary = dashboard_summary(rich_report)
+response_json = json_report(summary)  # Returns a string; writes nothing.
+```
+
+The exact object contains `report_version: 1`, `provenance`, `by_class`, and
+`ablation`. Each of the six malicious `by_class` entries contains only `name`,
+`blocked`, `total`, and nullable `block_rate`. `total` means observed decisions.
+Both `ablation.full_stack` and `ablation.llm_only` contain nullable `block_rate`,
+nullable `false_positive_rate`, and `coverage`. Coverage has `malicious` and
+`benign`, each with integer `planned`, `observed` and `unresolved`. Only full-stack
+also contains nullable `median_latency_ms`, nullable `p95_latency_ms`, and integer
+`latency_sample_count`. No older flat-dashboard aliases or fixture-only fields
+are added.
+
+The adapter recomputes from records and `scenario_counts` and validates cached
+integer counters against those records. Arm block rates use total observed malicious blocks
+divided by total observed malicious decisions, never averages of class rates.
+Step-up is included in that denominator only. False-positive rate includes benign
+blocks and step-ups divided by observed benign decisions. Zero observations give
+null, never an invented zero rate.
+
+Full-stack latency includes valid nonnegative finite numeric samples from all
+observed decisions, both malicious and benign. Booleans, missing values, strings,
+negative/nonfinite values and numbers outside finite dashboard representation
+are excluded without discarding their decision. Median uses the middle sample
+or midpoint; p95 uses sorted sample index `ceil(0.95 * n)` (one-based). No samples
+means null median/p95 and sample count zero. LLM-only timings are not exported.
+
+Planned counts come from `scenario_counts`; both arms must retain one record for
+every planned scenario, including unresolved error/unknown/missing/unsupported
+outcomes. Timeouts in the current runner appear as error outcomes. Missing records
+are rejected rather than silently treated as missing observations. Duplicate IDs,
+overfilled categories, conflicting scenario definitions across arms, invalid decisions,
+unsupported report shapes and conflicting provenance raise the typed
+`DashboardReportError`. Input values and exception messages are not logged.
+
+Comparison requires `ablation.scenario_sets_match` to be exactly true, a valid
+lowercase SHA-256 hex digest shared by the report and both arms, and matching
+scenario inventories independent of record order. The compared record fields are
+`scenario_id`, `category`, `expected_decision` and `expected_catching_layer`;
+observed decisions and timings may differ. Renamed, missing, extra and disjoint
+scenarios are rejected. The digest cannot be independently recomputed from rich
+records: the generator hashes complete scenario definitions, including inputs
+that the report intentionally omits. These checks establish internal consistency,
+not authenticity of an externally supplied digest or provenance claim.
+
+Cached `total`, `observed`, `unresolved`, `benign_observed`,
+`benign_false_positives` and each malicious category's `total`, `observed` and
+`blocked` must be exact integers matching the records. In rich metrics, category
+`total` includes unresolved records; dashboard class `total` remains observed
+decisions only. Floating-point rate/median caches and legacy `latency_samples`
+are not compared: the adapter derives rates itself and filters latency values,
+whereas the legacy rich counter includes every non-None sample. Valid nulls and
+measured zero rates are preserved. Neither serializer nor rich format is changed.
+
+Explicit `data_source` and matching boolean `synthetic` are required at report
+and both arm levels: `not_executed`/false maps to `unexecuted`,
+`synthetic_test_double`/true to `synthetic`, and explicit `genuine`/false to
+`genuine`. The last is a convention for a future imported genuine report, not a
+new executor or assertion that genuine results exist. No current runner emits
+it. Neither false alone nor records/latencies prove genuine execution. Conflicting
+or missing metadata is rejected, not combined. Unexecuted metadata cannot claim
+observed decisions.
+
+`fixtures/dashboard/` contains the three agreed JSON examples and their handoff
+README. **All fixture values are hand-authored contract examples, not measured
+benchmark findings**, including the file modeling genuine partial coverage.
+Tests enforce exact fields, JSON validity, arithmetic and equality with the
+matching hand-authored rich-record plans. Rikita must consume this newly agreed
+contract rather than the older cached flat model and render provenance, coverage
+and null metrics correctly. Endpoint hosting remains a separate teammate task.
