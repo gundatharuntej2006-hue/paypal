@@ -30,6 +30,10 @@ services:
         value: 3000
       - key: INTEL_API_TOKEN
         generateValue: true
+      - key: AGENT_AUTH_TOKEN
+        sync: false
+      - key: HUMAN_AUTH_TOKEN
+        sync: false
       - key: INTERNAL_LEDGER_TOKEN
         generateValue: true
       - key: RISK_THRESHOLD_BLOCK
@@ -83,20 +87,35 @@ services:
       - key: PAYPAL_WEBHOOK_ID
         sync: false
 
-  # -------------------------------------------------------------
-  # 3. Web Dashboard (React + AG Grid) - Workstream D (Rikita)
-  # -------------------------------------------------------------
   - type: web
     name: agentguard-dashboard
-    runtime: node
+    # Static sites use Render CDN and have no plan, region, or HTTP health check setting.
+    runtime: static
+    autoDeploy: true
     rootDir: dashboard
-    plan: starter
-    buildCommand: npm install && npm run build
-    startCommand: npx serve -s dist -l $PORT
+    buildCommand: npm ci && npm run build
+    staticPublishPath: dist
+    routes:
+      - type: rewrite
+        source: /*
+        destination: /index.html
     envVars:
+      - key: VITE_USE_STUB
+        value: "false"
+      - key: VITE_BENCHMARK_SOURCE
+        value: static
+      - key: VITE_DEMO_MODE
+        value: "true"
+      - key: VITE_PAYPAL_CLIENT_ID
+        fromService:
+          type: web
+          name: agentguard-gateway
+          envVarKey: PAYPAL_CLIENT_ID
       - key: VITE_GATEWAY_URL
-        # Public gateway URL reachable from the user's browser (e.g. https://agentguard-gateway.onrender.com)
-        sync: false
+        fromService:
+          type: web
+          name: agentguard-gateway
+          envVarKey: RENDER_EXTERNAL_URL
 
 databases:
   # -------------------------------------------------------------

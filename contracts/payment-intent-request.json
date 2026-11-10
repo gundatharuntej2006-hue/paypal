@@ -1,0 +1,42 @@
+{
+  "mandate": {
+    "mandate_id": "mdt_001",
+    "principal_id": "user_123",
+    "agent_id": "agent_shopper",
+    "task": "Buy one USB-C hub under 40 USD for the office",
+    "currency": "USD",
+    "max_total": "60.00",
+    "max_per_txn": "40.00",
+    "step_up_over": "25.00",
+    "allowed_merchants": [
+      "merchant_a",
+      "merchant_b"
+    ],
+    "allowed_categories": [
+      "electronics_accessories"
+    ],
+    "valid_from": "2026-11-10T00:00:00Z",
+    "expires_at": "2026-11-10T23:59:59Z",
+    "nonce": "example-nonce",
+    "paypal_order_id": "5O190127TN364715T",
+    "signature": "example-signature"
+  },
+  "merchant_id": "merchant_a",
+  "amount": "29.99",
+  "currency": "USD",
+  "items": [
+    {
+      "name": "USB-C hub 7-in-1",
+      "qty": 1,
+      "unit_price": "29.99"
+    }
+  ],
+  "agent_reasoning": "Compared three hubs and picked the best reviewed option.",
+  "source_contexts": [
+    {
+      "ref": "page_17",
+      "text": "USB-C hub with seven ports."
+    }
+  ],
+  "idempotency_key": "b69fd139-5729-4344-bf3e-31a28e20fe11"
+}

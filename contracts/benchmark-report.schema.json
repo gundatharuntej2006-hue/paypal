@@ -1,0 +1,471 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AgentGuard benchmark summary",
+  "description": "Rates use observed decisions. Null means unavailable. A numeric zero is an observed result.",
+  "type": "object",
+  "properties": {
+    "provenance": {
+      "enum": [
+        "genuine",
+        "synthetic",
+        "unexecuted"
+      ]
+    },
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "classes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "blocked": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "block_rate": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "maximum": 1
+          }
+        },
+        "required": [
+          "name",
+          "total",
+          "blocked"
+        ]
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "properties": {
+        "full_stack": {
+          "type": "object",
+          "properties": {
+            "malicious": {
+              "type": "object",
+              "properties": {
+                "planned": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "observed": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "unresolved": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "planned",
+                "observed",
+                "unresolved"
+              ]
+            },
+            "benign": {
+              "type": "object",
+              "properties": {
+                "planned": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "observed": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "unresolved": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "planned",
+                "observed",
+                "unresolved"
+              ]
+            }
+          },
+          "required": [
+            "malicious",
+            "benign"
+          ]
+        },
+        "llm_only": {
+          "type": "object",
+          "properties": {
+            "malicious": {
+              "type": "object",
+              "properties": {
+                "planned": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "observed": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "unresolved": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "planned",
+                "observed",
+                "unresolved"
+              ]
+            },
+            "benign": {
+              "type": "object",
+              "properties": {
+                "planned": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "observed": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "unresolved": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "planned",
+                "observed",
+                "unresolved"
+              ]
+            }
+          },
+          "required": [
+            "malicious",
+            "benign"
+          ]
+        }
+      },
+      "required": [
+        "full_stack",
+        "llm_only"
+      ]
+    },
+    "ablation": {
+      "type": "object",
+      "properties": {
+        "full_stack": {
+          "type": "object",
+          "properties": {
+            "block_rate": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 1
+            },
+            "false_positive_rate": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 1
+            },
+            "coverage": {
+              "$ref": "#/properties/coverage/properties/full_stack"
+            },
+            "median_latency_ms": {
+              "$ref": "#/properties/median_latency_ms"
+            },
+            "p95_latency_ms": {
+              "$ref": "#/properties/p95_latency_ms"
+            },
+            "latency_sample_count": {
+              "$ref": "#/properties/latency_sample_count"
+            }
+          },
+          "required": [
+            "block_rate",
+            "false_positive_rate"
+          ]
+        },
+        "llm_only": {
+          "type": "object",
+          "properties": {
+            "block_rate": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 1
+            },
+            "false_positive_rate": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 1
+            },
+            "coverage": {
+              "$ref": "#/properties/coverage/properties/llm_only"
+            }
+          },
+          "required": [
+            "block_rate",
+            "false_positive_rate"
+          ]
+        }
+      },
+      "required": [
+        "full_stack",
+        "llm_only"
+      ]
+    },
+    "false_positive_rate": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "minimum": 0,
+      "maximum": 1
+    },
+    "median_latency_ms": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "p95_latency_ms": {
+      "type": [
+        "number",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "latency_sample_count": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "catching_layer_counts": {
+      "type": "object",
+      "properties": {
+        "mandate": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "injection": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "intent": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "risk": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "other": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        }
+      }
+    },
+    "scenarios": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "class",
+          "label",
+          "expected",
+          "actual",
+          "layer",
+          "latency_ms"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "class": {
+            "type": "string",
+            "minLength": 1
+          },
+          "label": {
+            "type": "string",
+            "minLength": 1
+          },
+          "expected": {
+            "enum": [
+              "allow",
+              "step_up",
+              "block"
+            ]
+          },
+          "actual": {
+            "enum": [
+              "allow",
+              "step_up",
+              "block",
+              "error",
+              null
+            ]
+          },
+          "layer": {
+            "enum": [
+              "mandate",
+              "injection",
+              "intent",
+              "risk",
+              "other",
+              null
+            ]
+          },
+          "latency_ms": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "report_version": {
+      "const": 1
+    },
+    "by_class": {
+      "$ref": "#/properties/classes"
+    }
+  },
+  "required": [
+    "provenance",
+    "ablation"
+  ],
+  "allOf": [
+    {
+      "anyOf": [
+        {
+          "required": [
+            "classes"
+          ]
+        },
+        {
+          "required": [
+            "by_class"
+          ]
+        }
+      ]
+    },
+    {
+      "anyOf": [
+        {
+          "required": [
+            "coverage"
+          ]
+        },
+        {
+          "properties": {
+            "ablation": {
+              "properties": {
+                "full_stack": {
+                  "required": [
+                    "coverage"
+                  ]
+                },
+                "llm_only": {
+                  "required": [
+                    "coverage"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  ]
+}

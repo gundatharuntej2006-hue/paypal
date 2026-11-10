@@ -1,0 +1,461 @@
+{
+  "info": {
+    "name": "AgentGuard Gateway",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+    "description": "Gateway contract checks for local fixtures and sandbox. The server implementation is pending on ritika."
+  },
+  "item": [
+    {
+      "name": "Read-only checks",
+      "item": [
+        {
+          "name": "Health",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Expected HTTP status\", () => pm.expect([200,204]).to.include(pm.response.code));",
+                  "pm.test(\"Readiness is not an HTML proxy page\", () => pm.expect(pm.response.headers.get(\"Content-Type\") || \"\").not.to.match(/text\\/html/i));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{gateway_url}}/health",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "health"
+              ]
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "List mandates",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Expected HTTP status\", () => pm.expect([200]).to.include(pm.response.code));",
+                  "pm.test(\"Response matches contract\", () => pm.response.to.have.jsonSchema({\"type\":\"array\",\"items\":{\"type\":\"object\",\"required\":[\"mandate_id\",\"principal_id\",\"agent_id\",\"task\",\"currency\",\"max_total\",\"max_per_txn\",\"step_up_over\",\"allowed_merchants\",\"allowed_categories\",\"valid_from\",\"expires_at\",\"nonce\",\"paypal_order_id\",\"signature\"],\"properties\":{\"mandate_id\":{\"type\":\"string\",\"minLength\":1},\"principal_id\":{\"type\":\"string\",\"minLength\":1},\"agent_id\":{\"type\":\"string\",\"minLength\":1},\"task\":{\"type\":\"string\",\"minLength\":1},\"currency\":{\"type\":\"string\",\"minLength\":1},\"max_total\":{\"type\":\"string\",\"pattern\":\"^[0-9]+\\\\.[0-9]{2}$\"},\"max_per_txn\":{\"type\":\"string\",\"pattern\":\"^[0-9]+\\\\.[0-9]{2}$\"},\"step_up_over\":{\"type\":\"string\",\"pattern\":\"^[0-9]+\\\\.[0-9]{2}$\"},\"allowed_merchants\":{\"type\":\"array\",\"items\":{\"type\":\"string\",\"minLength\":1}},\"allowed_categories\":{\"type\":\"array\",\"items\":{\"type\":\"string\",\"minLength\":1}},\"valid_from\":{\"type\":\"string\",\"minLength\":1},\"expires_at\":{\"type\":\"string\",\"minLength\":1},\"nonce\":{\"type\":\"string\",\"minLength\":1},\"paypal_order_id\":{\"type\":\"string\",\"minLength\":1},\"signature\":{\"type\":\"string\",\"minLength\":1}}}}));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{gateway_url}}/v1/mandates",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "v1",
+                "mandates"
+              ]
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Payment event history",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Expected HTTP status\", () => pm.expect([200]).to.include(pm.response.code));",
+                  "pm.test(\"Response matches contract\", () => pm.response.to.have.jsonSchema({\"type\":\"array\",\"items\":{\"type\":\"object\",\"required\":[\"id\",\"type\",\"payment_id\",\"mandate_id\",\"ts\",\"payload\"],\"properties\":{\"id\":{\"type\":\"string\",\"minLength\":1},\"type\":{\"type\":\"string\",\"minLength\":1},\"payment_id\":{\"type\":[\"string\",\"null\"]},\"mandate_id\":{\"type\":[\"string\",\"null\"]},\"ts\":{\"type\":\"string\",\"minLength\":1},\"payload\":{\"type\":\"object\"}}}}));",
+                  "pm.test(\"Events belong to the requested payment\", () => {",
+                  "  pm.response.json().forEach(event => pm.expect(event.payment_id).to.equal(pm.environment.get(\"payment_id\")));",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "url": {
+              "raw": "{{gateway_url}}/v1/payments/{{payment_id}}/events",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "v1",
+                "payments",
+                "{{payment_id}}",
+                "events"
+              ]
+            },
+            "description": ""
+          }
+        }
+      ]
+    },
+    {
+      "name": "Sandbox writes",
+      "item": [
+        {
+          "name": "Create signed mandate",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const enabled = pm.environment.get(\"enable_sandbox_writes\") === \"true\";",
+                  "const missing = [\"signed_mandate_json\"].filter(name => !String(pm.environment.get(name) || \"\").trim());",
+                  "if (!enabled || missing.length) {",
+                  "  console.warn(\"Skipping sandbox write. Enable writes and populate: \" + missing.join(\", \"));",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Expected HTTP status\", () => pm.expect([200,201]).to.include(pm.response.code));",
+                  "pm.test(\"Response matches contract\", () => pm.response.to.have.jsonSchema({\"type\":\"object\",\"required\":[\"mandate_id\",\"principal_id\",\"agent_id\",\"task\",\"currency\",\"max_total\",\"max_per_txn\",\"step_up_over\",\"allowed_merchants\",\"allowed_categories\",\"valid_from\",\"expires_at\",\"nonce\",\"paypal_order_id\",\"signature\"],\"properties\":{\"mandate_id\":{\"type\":\"string\",\"minLength\":1},\"principal_id\":{\"type\":\"string\",\"minLength\":1},\"agent_id\":{\"type\":\"string\",\"minLength\":1},\"task\":{\"type\":\"string\",\"minLength\":1},\"currency\":{\"type\":\"string\",\"minLength\":1},\"max_total\":{\"type\":\"string\",\"pattern\":\"^[0-9]+\\\\.[0-9]{2}$\"},\"max_per_txn\":{\"type\":\"string\",\"pattern\":\"^[0-9]+\\\\.[0-9]{2}$\"},\"step_up_over\":{\"type\":\"string\",\"pattern\":\"^[0-9]+\\\\.[0-9]{2}$\"},\"allowed_merchants\":{\"type\":\"array\",\"items\":{\"type\":\"string\",\"minLength\":1}},\"allowed_categories\":{\"type\":\"array\",\"items\":{\"type\":\"string\",\"minLength\":1}},\"valid_from\":{\"type\":\"string\",\"minLength\":1},\"expires_at\":{\"type\":\"string\",\"minLength\":1},\"nonce\":{\"type\":\"string\",\"minLength\":1},\"paypal_order_id\":{\"type\":\"string\",\"minLength\":1},\"signature\":{\"type\":\"string\",\"minLength\":1}}}));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/v1/mandates",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "v1",
+                "mandates"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{signed_mandate_json}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Submit payment intent",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const enabled = pm.environment.get(\"enable_sandbox_writes\") === \"true\";",
+                  "const missing = [\"payment_intent_json\"].filter(name => !String(pm.environment.get(name) || \"\").trim());",
+                  "if (!enabled || missing.length) {",
+                  "  console.warn(\"Skipping sandbox write. Enable writes and populate: \" + missing.join(\", \"));",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Expected HTTP status\", () => pm.expect([200,201,202]).to.include(pm.response.code));",
+                  "pm.test(\"Response matches contract\", () => pm.response.to.have.jsonSchema({\"type\":\"object\",\"required\":[\"payment_id\",\"decision\",\"reasons\",\"checks\",\"audit_event_id\"],\"properties\":{\"payment_id\":{\"type\":\"string\",\"minLength\":1},\"decision\":{\"enum\":[\"allow\",\"step_up\",\"block\"]},\"reasons\":{\"type\":\"array\",\"items\":{\"type\":\"string\",\"minLength\":1}},\"checks\":{\"type\":\"object\"},\"audit_event_id\":{\"type\":\"string\",\"minLength\":1},\"risk_score\":{\"type\":[\"number\",\"null\"]},\"paypal\":{\"type\":[\"object\",\"null\"]}}}));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/v1/payments/intents",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "v1",
+                "payments",
+                "intents"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{payment_intent_json}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Approve step-up payment",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const enabled = pm.environment.get(\"enable_sandbox_writes\") === \"true\";",
+                  "const missing = [\"approve_payment_id\",\"approval_json\"].filter(name => !String(pm.environment.get(name) || \"\").trim());",
+                  "if (!enabled || missing.length) {",
+                  "  console.warn(\"Skipping sandbox write. Enable writes and populate: \" + missing.join(\", \"));",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Expected HTTP status\", () => pm.expect([200,202,204]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/v1/payments/{{approve_payment_id}}/approve",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "v1",
+                "payments",
+                "{{approve_payment_id}}",
+                "approve"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{approval_json}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Use a pending payment ID. Supply paypal_order_id only after buyer consent where required."
+          }
+        },
+        {
+          "name": "Reject step-up payment",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const enabled = pm.environment.get(\"enable_sandbox_writes\") === \"true\";",
+                  "const missing = [\"reject_payment_id\",\"rejection_json\"].filter(name => !String(pm.environment.get(name) || \"\").trim());",
+                  "if (!enabled || missing.length) {",
+                  "  console.warn(\"Skipping sandbox write. Enable writes and populate: \" + missing.join(\", \"));",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Expected HTTP status\", () => pm.expect([200,202,204]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/v1/payments/{{reject_payment_id}}/reject",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "v1",
+                "payments",
+                "{{reject_payment_id}}",
+                "reject"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{{rejection_json}}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": ""
+          }
+        },
+        {
+          "name": "Reject unsigned PayPal webhook",
+          "event": [
+            {
+              "listen": "prerequest",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "const enabled = pm.environment.get(\"enable_sandbox_writes\") === \"true\";",
+                  "const missing = [].filter(name => !String(pm.environment.get(name) || \"\").trim());",
+                  "if (!enabled || missing.length) {",
+                  "  console.warn(\"Skipping sandbox write. Enable writes and populate: \" + missing.join(\", \"));",
+                  "  pm.execution.skipRequest();",
+                  "}"
+                ]
+              }
+            },
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Expected HTTP status\", () => pm.expect([400,401,403]).to.include(pm.response.code));"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/webhooks/paypal",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "webhooks",
+                "paypal"
+              ]
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"id\": \"UNSIGNED-DEMO-TEST\",\n  \"event_type\": \"PAYMENT.CAPTURE.COMPLETED\",\n  \"resource\": {}\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            },
+            "description": "Negative check only. A successful response means this check failed. Use PayPal Sandbox for a genuine signed delivery."
+          }
+        }
+      ]
+    },
+    {
+      "name": "Streaming (manual)",
+      "item": [
+        {
+          "name": "Subscribe to audit SSE",
+          "event": [
+            {
+              "listen": "test",
+              "script": {
+                "type": "text/javascript",
+                "exec": [
+                  "pm.test(\"Expected HTTP status\", () => pm.expect([200]).to.include(pm.response.code));",
+                  "pm.test(\"Uses the SSE content type\", () => pm.expect(pm.response.headers.get(\"Content-Type\") || \"\").to.match(/^text\\/event-stream\\b/i));",
+                  "pm.test(\"Each JSON event uses the audit envelope\", () => {",
+                  "  const schema = {\"type\":\"object\",\"required\":[\"id\",\"type\",\"payment_id\",\"mandate_id\",\"ts\",\"payload\"],\"properties\":{\"id\":{\"type\":\"string\",\"minLength\":1},\"type\":{\"type\":\"string\",\"minLength\":1},\"payment_id\":{\"type\":[\"string\",\"null\"]},\"mandate_id\":{\"type\":[\"string\",\"null\"]},\"ts\":{\"type\":\"string\",\"minLength\":1},\"payload\":{\"type\":\"object\"}}};",
+                  "  const lines = pm.response.text().split(/\\r?\\n/).filter(line => line.startsWith(\"data:\"));",
+                  "  pm.expect(lines.length).to.be.greaterThan(0);",
+                  "  lines.forEach(line => {",
+                  "    const event = JSON.parse(line.slice(5).trim());",
+                  "    pm.expect(event).to.have.jsonSchema(schema);",
+                  "  });",
+                  "});"
+                ]
+              }
+            }
+          ],
+          "request": {
+            "method": "GET",
+            "header": [
+              {
+                "key": "Accept",
+                "value": "text/event-stream"
+              }
+            ],
+            "url": {
+              "raw": "{{gateway_url}}/v1/events",
+              "host": [
+                "{{gateway_url}}"
+              ],
+              "path": [
+                "v1",
+                "events"
+              ],
+              "query": [
+                {
+                  "key": "payment_id",
+                  "value": "{{payment_id}}",
+                  "disabled": true
+                }
+              ]
+            },
+            "description": "Enable the payment_id query parameter to filter the stream. Inspect frames in Postman. For automated runs use a fixture that closes the stream."
+          }
+        }
+      ]
+    }
+  ]
+}
