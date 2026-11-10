@@ -14,12 +14,25 @@ func SetupRouter(s *Server) http.Handler {
 	// Payment Intent Gateway (shopping agents)
 	mux.HandleFunc("POST /v1/payments/intents", s.handlePaymentIntent)
 
+	// Mandates (Rikita's dashboard)
+	mux.HandleFunc("GET /v1/mandates", s.handleListMandates)
+	mux.HandleFunc("POST /v1/mandates", s.handleCreateMandate)
+	mux.HandleFunc("POST /v1/mandates/{id}/order", s.handleCreateMandateOrder)
+
 	// Human Step-up Approvals (Rikita's dashboard)
+	mux.HandleFunc("GET /v1/approvals", s.handleListApprovals)
 	mux.HandleFunc("POST /v1/payments/{id}/approve", s.handleApprovePayment)
 	mux.HandleFunc("POST /v1/payments/{id}/reject", s.handleRejectPayment)
 
-	// Payment details & timeline
+	// Payments listing, details & timeline
+	mux.HandleFunc("GET /v1/payments", s.handleListPayments)
 	mux.HandleFunc("GET /v1/payments/{id}", s.handleGetPayment)
+
+	// Demo scenarios runner (happy_path, poisoned_page, budget_splitting)
+	mux.HandleFunc("POST /v1/demo/run", s.handleRunDemoScenario)
+
+	// Benchmark report
+	mux.HandleFunc("GET /v1/benchmark/report", s.handleGetBenchmarkReport)
 
 	// Server-Sent Events stream (AG Grid live updates)
 	mux.HandleFunc("GET /v1/events", s.handleSSEEvents)
@@ -38,7 +51,7 @@ func withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Internal-Token, PayPal-Request-Id")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Internal-Token, X-Step-Up-Token, X-Agent-Key, PayPal-Request-Id")
 
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)

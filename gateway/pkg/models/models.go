@@ -70,7 +70,20 @@ type PaymentIntentRequest struct {
 
 // StepUpApprovalRequest is sent to approve a step-up payment.
 type StepUpApprovalRequest struct {
-	StepUpToken string `json:"step_up_token"`
+	StepUpToken   string `json:"step_up_token,omitempty"`
+	PayPalOrderID string `json:"paypal_order_id,omitempty"`
+}
+
+// StepUpRejectRequest is sent to reject a step-up payment.
+type StepUpRejectRequest struct {
+	Reason string `json:"reason,omitempty"`
+}
+
+// DemoRunRequest is sent by dashboard to trigger a demo scenario.
+type DemoRunRequest struct {
+	Scenario       string `json:"scenario"` // happy_path, poisoned_page, budget_splitting
+	MandateID      string `json:"mandate_id,omitempty"`
+	IdempotencyKey string `json:"idempotency_key,omitempty"`
 }
 
 // DecisionType represents allow, step_up, or block.

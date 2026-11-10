@@ -32,6 +32,7 @@ type Ledger interface {
 	GetEventsByPayment(ctx context.Context, paymentID string) ([]models.LedgerEvent, error)
 	GetEventsByMandate(ctx context.Context, mandateID string) ([]models.LedgerEvent, error)
 	ListEvents(ctx context.Context, limit int) ([]models.LedgerEvent, error)
+	ListPayments(ctx context.Context, limit int) ([]*models.PaymentProjection, error)
 	GetPaymentProjection(ctx context.Context, paymentID string) (*models.PaymentProjection, error)
 	GetMandateProjection(ctx context.Context, mandateID string) (*models.MandateProjection, error)
 	GetTotalSpent(mandateID string) (float64, error)
@@ -161,6 +162,21 @@ func (m *MemoryLedger) ListEvents(ctx context.Context, limit int) ([]models.Ledg
 		result[i], result[j] = result[j], result[i]
 	}
 	return result, nil
+}
+
+func (m *MemoryLedger) ListPayments(ctx context.Context, limit int) ([]*models.PaymentProjection, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	res := make([]*models.PaymentProjection, 0, len(m.paymentProjections))
+	for _, p := range m.paymentProjections {
+		cp := *p
+		res = append(res, &cp)
+		if limit > 0 && len(res) >= limit {
+			break
+		}
+	}
+	return res, nil
 }
 
 func (m *MemoryLedger) GetPaymentProjection(ctx context.Context, paymentID string) (*models.PaymentProjection, error) {
@@ -884,6 +900,42 @@ func (p *PostgresLedger) ListEvents(ctx context.Context, limit int) ([]models.Le
 		events = append(events, e)
 	}
 	return events, nil
+}
+
+func (p *PostgresLedger) ListPayments(ctx context.Context, limit int) ([]*models.PaymentProjection, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := p.db.QueryContext(ctx, `
+		SELECT payment_id, mandate_id, COALESCE(merchant_id, ''), COALESCE(amount, ''), COALESCE(currency, ''), 
+		       COALESCE(state, ''), COALESCE(decision, ''), COALESCE(risk_score, 0), COALESCE(step_up_token, ''), 
+		       step_up_expires_at, COALESCE(step_up_consumed, FALSE), COALESCE(spent_committed, FALSE), COALESCE(is_dry_run, FALSE),
+		       COALESCE(paypal_order_id, ''), COALESCE(paypal_auth_id, ''), COALESCE(paypal_capture_id, ''), 
+		       created_at, updated_at 
+		FROM projections_payments
+		ORDER BY created_at DESC
+		LIMIT $1
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var list []*models.PaymentProjection
+	for rows.Next() {
+		var pr models.PaymentProjection
+		if err := rows.Scan(
+			&pr.PaymentID, &pr.MandateID, &pr.MerchantID, &pr.Amount, &pr.Currency,
+			&pr.State, &pr.Decision, &pr.RiskScore, &pr.StepUpToken,
+			&pr.StepUpExpiresAt, &pr.StepUpConsumed, &pr.SpentCommitted, &pr.IsDryRun,
+			&pr.PayPalOrderID, &pr.PayPalAuthID, &pr.PayPalCaptureID,
+			&pr.CreatedAt, &pr.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		list = append(list, &pr)
+	}
+	return list, nil
 }
 
 func (p *PostgresLedger) GetPaymentProjection(ctx context.Context, paymentID string) (*models.PaymentProjection, error) {

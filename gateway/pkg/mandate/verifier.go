@@ -256,8 +256,12 @@ func (v *Verifier) VerifyMandate(req *models.PaymentIntentRequest, now time.Time
 			if v.strictRegistry {
 				return &VerificationResult{Valid: false, FailedReason: ErrUnknownPrincipal.Error()}, ErrUnknownPrincipal
 			}
-		} else if trustedKey != m.PublicKey {
-			return &VerificationResult{Valid: false, FailedReason: ErrUntrustedPrincipalKey.Error()}, ErrUntrustedPrincipalKey
+		} else {
+			if m.PublicKey == "" {
+				m.PublicKey = trustedKey
+			} else if trustedKey != m.PublicKey {
+				return &VerificationResult{Valid: false, FailedReason: ErrUntrustedPrincipalKey.Error()}, ErrUntrustedPrincipalKey
+			}
 		}
 	}
 
