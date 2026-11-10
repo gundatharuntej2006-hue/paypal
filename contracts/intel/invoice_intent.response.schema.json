@@ -1,0 +1,214 @@
+{
+  "$defs": {
+    "Item": {
+      "properties": {
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "qty": {
+          "minimum": 1,
+          "title": "Qty",
+          "type": "integer"
+        },
+        "unit_price": {
+          "examples": [
+            "29.99"
+          ],
+          "pattern": "^\\d+(\\.\\d{1,2})?$",
+          "title": "Unit Price",
+          "type": "string"
+        },
+        "category": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Category"
+        }
+      },
+      "required": [
+        "name",
+        "qty",
+        "unit_price"
+      ],
+      "title": "Item",
+      "type": "object"
+    },
+    "Proposal": {
+      "properties": {
+        "merchant_id": {
+          "title": "Merchant Id",
+          "type": "string"
+        },
+        "merchant_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Merchant Name"
+        },
+        "amount": {
+          "examples": [
+            "29.99"
+          ],
+          "pattern": "^\\d+(\\.\\d{1,2})?$",
+          "title": "Amount",
+          "type": "string"
+        },
+        "currency": {
+          "examples": [
+            "USD"
+          ],
+          "pattern": "^[A-Z]{3}$",
+          "title": "Currency",
+          "type": "string"
+        },
+        "category": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Category the agent declares for this purchase.",
+          "title": "Category"
+        },
+        "items": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Item"
+          },
+          "title": "Items",
+          "type": "array"
+        }
+      },
+      "required": [
+        "merchant_id",
+        "amount",
+        "currency"
+      ],
+      "title": "Proposal",
+      "type": "object"
+    },
+    "SourceContext": {
+      "properties": {
+        "ref": {
+          "title": "Ref",
+          "type": "string"
+        },
+        "kind": {
+          "default": "text",
+          "enum": [
+            "html",
+            "text",
+            "review",
+            "email",
+            "invoice",
+            "tool_output"
+          ],
+          "title": "Kind",
+          "type": "string"
+        },
+        "url": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Url"
+        },
+        "text": {
+          "description": "Text the agent read.",
+          "maxLength": 200000,
+          "title": "Text",
+          "type": "string"
+        },
+        "html": {
+          "anyOf": [
+            {
+              "maxLength": 1000000,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "description": "Raw HTML when available; needed to detect hidden-text tricks.",
+          "title": "Html"
+        }
+      },
+      "required": [
+        "ref",
+        "text"
+      ],
+      "title": "SourceContext",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "description": "An invoice turned into a payment proposal plus the invoice text, for POST /v1/payments/intents.",
+  "properties": {
+    "invoice_id": {
+      "title": "Invoice Id",
+      "type": "string"
+    },
+    "invoice_number": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Invoice Number"
+    },
+    "status": {
+      "title": "Status",
+      "type": "string"
+    },
+    "payable": {
+      "title": "Payable",
+      "type": "boolean"
+    },
+    "proposal": {
+      "$ref": "#/$defs/Proposal"
+    },
+    "source_contexts": {
+      "items": {
+        "$ref": "#/$defs/SourceContext"
+      },
+      "title": "Source Contexts",
+      "type": "array"
+    }
+  },
+  "required": [
+    "invoice_id",
+    "invoice_number",
+    "status",
+    "payable",
+    "proposal",
+    "source_contexts"
+  ],
+  "title": "InvoiceIntentResponse",
+  "type": "object"
+}

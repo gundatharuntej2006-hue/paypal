@@ -1,0 +1,53 @@
+{
+  "properties": {
+    "payment_id": {
+      "description": "Gateway payment id. Only call after the gateway decided 'allow'.",
+      "title": "Payment Id",
+      "type": "string"
+    },
+    "receiver": {
+      "description": "Payee's PayPal email.",
+      "maxLength": 127,
+      "minLength": 3,
+      "title": "Receiver",
+      "type": "string"
+    },
+    "amount": {
+      "examples": [
+        "29.99"
+      ],
+      "pattern": "^\\d+(\\.\\d{1,2})?$",
+      "title": "Amount",
+      "type": "string"
+    },
+    "currency": {
+      "examples": [
+        "USD"
+      ],
+      "pattern": "^[A-Z]{3}$",
+      "title": "Currency",
+      "type": "string"
+    },
+    "note": {
+      "anyOf": [
+        {
+          "maxLength": 1000,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Note"
+    }
+  },
+  "required": [
+    "payment_id",
+    "receiver",
+    "amount",
+    "currency"
+  ],
+  "title": "PayoutRequest",
+  "type": "object"
+}

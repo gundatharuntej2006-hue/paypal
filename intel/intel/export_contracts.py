@@ -12,8 +12,15 @@ from typing import Any
 
 from intel import samples, stub
 from intel.models import (
+    InvoiceIntentResponse,
+    InvoicePaymentRequest,
+    InvoicePaymentResponse,
     JudgeRequest,
     JudgeResponse,
+    PayoutRequest,
+    PayoutResponse,
+    ReconRequest,
+    ReconResponse,
     RiskRequest,
     RiskResponse,
     ScanRequest,
@@ -26,13 +33,19 @@ ENDPOINTS = {
     "scan_content": (ScanRequest, ScanResponse),
     "judge_intent": (JudgeRequest, JudgeResponse),
     "risk_score": (RiskRequest, RiskResponse),
+    # Internal PayPal operations (gateway only)
+    "recon_run": (ReconRequest, ReconResponse),
+    "payouts_create": (PayoutRequest, PayoutResponse),
+    "invoice_intent": (None, InvoiceIntentResponse),
+    "invoice_payment": (InvoicePaymentRequest, InvoicePaymentResponse),
 }
 
 
 def schemas() -> dict[str, dict[str, Any]]:
     out: dict[str, dict[str, Any]] = {}
     for name, (request_model, response_model) in ENDPOINTS.items():
-        out[f"{name}.request.schema.json"] = request_model.model_json_schema(mode="validation")
+        if request_model is not None:
+            out[f"{name}.request.schema.json"] = request_model.model_json_schema(mode="validation")
         out[f"{name}.response.schema.json"] = response_model.model_json_schema(mode="serialization")
     return out
 

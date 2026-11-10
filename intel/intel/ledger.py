@@ -44,3 +44,19 @@ async def append(
         return
     if response.status_code >= 300:
         raise LedgerError(f"ledger_http_{response.status_code}")
+
+
+async def read_events(settings: Settings) -> list[dict[str, Any]]:
+    """Read recent ledger events from the gateway (GET /v1/ledger/events). Without a gateway, use MEMORY."""
+    if not settings.gateway_url:
+        return list(MEMORY)
+    try:
+        response = await get_http().get(
+            f"{settings.gateway_url}/v1/ledger/events", headers={"X-Internal-Token": settings.ledger_token or ""}
+        )
+    except httpx.HTTPError as error:
+        raise LedgerError(f"ledger_unreachable: {error}") from None
+    if response.status_code != 200:
+        raise LedgerError(f"ledger_http_{response.status_code}")
+    body = response.json()
+    return body if isinstance(body, list) else []
