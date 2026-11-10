@@ -71,7 +71,7 @@ py -m intel.invoices create --to BUYER_EMAIL --amount 29.99 --item "A4 paper, 5 
 py -m intel.invoices show INV2-XXXX                   # the proposal the gateway would receive
 ```
 
-Golden cases live in `intel/golden/*.json`. Add cases there; Tharun's library will be imported into the same format.
+Golden cases live in `intel/golden/<endpoint>.json`. `intel/golden/<endpoint>.wsc.json` are generated from Tharun's Workstream C attack library: `py -m intel.import_wsc PATH/TO/workstream-c/src`. Its 15 poisoned pages and clean pages go to scan; its benign scenarios go to judge and risk; its intent-drift scenarios are rebuilt as concrete drifted purchases for judge (see the module docstring for what is left out and why). `py -m intel.eval` reads both. Risk cases count as caught at 0.35, the gateway's step-up line.
 
 ## Live mode status
 

@@ -32,7 +32,7 @@ from intel.main import run_signal
 from intel.models import JudgeRequest, JudgeResponse, RiskRequest, RiskResponse, ScanRequest, ScanResponse
 
 GOLDEN_DIR = Path(__file__).parent / "golden"
-RISK_LINE = 0.5  # score at which the gateway should at least step up
+RISK_LINE = 0.35  # the gateway's step-up line (RISK_THRESHOLD_STEPUP)
 
 
 @dataclass(frozen=True)
@@ -54,9 +54,13 @@ ENDPOINTS = {
 
 
 def load_cases(name: str) -> list[dict[str, Any]]:
-    data = json.loads((GOLDEN_DIR / f"{name}.json").read_text(encoding="utf-8"))
-    defaults = data.get("defaults", {})
-    return [{**case, "request": {**defaults, **case["request"]}} for case in data["cases"]]
+    """Cases from <name>.json plus any extra sets such as <name>.wsc.json (Tharun's library)."""
+    cases = []
+    for path in [GOLDEN_DIR / f"{name}.json", *sorted(GOLDEN_DIR.glob(f"{name}.*.json"))]:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        defaults = data.get("defaults", {})
+        cases += [{**case, "request": {**defaults, **case["request"]}} for case in data["cases"]]
+    return cases
 
 
 async def evaluate(name: str, concurrency: int = 4, deadline_s: float | None = None) -> list[dict[str, Any]]:
