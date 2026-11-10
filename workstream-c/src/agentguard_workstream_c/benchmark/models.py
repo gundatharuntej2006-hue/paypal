@@ -4,6 +4,9 @@ from dataclasses import dataclass
 from typing import Protocol
 import json
 
+from ..agent.state import ModelDecision
+from .evidence import IntelligenceEvidence
+
 CATEGORIES = (
     "indirect_prompt_injection", "authority_attacks", "budget_evasion",
     "merchant_attacks", "intent_drift", "operational_attacks",
@@ -48,6 +51,8 @@ class Observation:
     latency_ms: float | None = None
     outcome: str = "missing"
     error_code: str | None = None
+    intelligence: IntelligenceEvidence | None = None
+    model_output: ModelDecision | None = None  # Actual adapter outcome, never a constructed mutation.
 
 
 class Executor(Protocol):

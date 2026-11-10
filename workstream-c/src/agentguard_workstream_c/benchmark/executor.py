@@ -1,12 +1,15 @@
 """Offline execution orchestration; no SDK, HTTP client or real adapter."""
 
 from collections import Counter
+from dataclasses import asdict
 from hashlib import sha256
 import json
 import math
 
 from .metrics import calculate_metrics
 from .models import DECISIONS, LAYERS, SYSTEMS, Executor, Observation
+from .evidence import IntelligenceEvidence, methodology_metadata
+from ..agent.state import ModelDecision
 from .validator import validate_library
 
 
@@ -31,6 +34,10 @@ class DeterministicTestDouble:
 def validate_observation(result):
     if not isinstance(result, Observation) or result.outcome not in ("observed", "unknown", "missing", "error", "unsupported"):
         raise ValueError("invalid executor observation")
+    if result.intelligence is not None and not isinstance(result.intelligence, IntelligenceEvidence):
+        raise ValueError("invalid observed intelligence evidence")
+    if result.model_output is not None and not isinstance(result.model_output, ModelDecision):
+        raise ValueError("model output must be an actual ModelDecision, never a constructed proposal")
     if result.catching_layer not in (*LAYERS, None):
         raise ValueError("invalid observed layer")
     if result.latency_ms is not None and (type(result.latency_ms) not in (float, int)
@@ -80,13 +87,16 @@ def run_benchmark(scenarios, executors: dict[str, Executor] | None = None) -> di
                             "expected_decision": scenario.expected_decision,
                             "expected_catching_layer": scenario.expected_catching_layer,
                             "observed_decision": result.decision, "actual_catching_layer": result.catching_layer,
-                            "latency_ms": result.latency_ms, "outcome": result.outcome, "error_code": result.error_code})
+                            "latency_ms": result.latency_ms, "outcome": result.outcome, "error_code": result.error_code,
+                            "intelligence": None if result.intelligence is None else result.intelligence.to_dict(),
+                            "model_output": None if result.model_output is None else
+                            json.loads(json.dumps(asdict(result.model_output), ensure_ascii=False, allow_nan=False))})
         runs[system] = {"executor": None if executor is None else executor.name, "scenario_set_sha256": digest,
                         "data_source": "not_executed" if executor is None else executor.data_source,
                         "synthetic": executor is not None, "records": records, "metrics": calculate_metrics(records)}
     paired = [(a, b) for a, b in zip(runs["llm_only"]["records"], runs["full_stack"]["records"])
               if a["outcome"] == b["outcome"] == "observed"]
-    return {"report_version": 1, "mode": "test_double" if executors else "validation",
+    return {"report_version": 1, "methodology": methodology_metadata(), "mode": "test_double" if executors else "validation",
             "data_source": "synthetic_test_double" if executors else "not_executed", "synthetic": bool(executors),
             "notice": "Synthetic infrastructure test; NOT AgentGuard security performance." if executors else
                       "Definitions validated only; security behavior was not executed or measured.",

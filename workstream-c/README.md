@@ -707,6 +707,24 @@ preserves build isolation and requires no setuptools pin or package changes.
 
 ## Declarative attack library and offline benchmark
 
+Scenario preparation now has a separate offline materializer and conservative
+observed-evidence attribution helper. See [scenario materialization](docs/scenario-materialization.md)
+for all 80 capability reasons, snapshot-backed graph injection and paired-input
+hashing. This adds no genuine executor: 19 cases support the current selection
+interface, 44 require future gateway/lifecycle interfaces, and 17 have missing
+runtime semantics. These are capability counts, not attack/defense results.
+The dedicated scan projection contains exactly the original 15 poisoned fixture
+pages. Descriptive payloads remain plans, not rendered attack content. Seven
+Atul-compatible DRIFT proposals are separately tagged `harness_constructed`;
+they are not model observations. Rich reports retain optional observed signal
+versions/latencies separately from end-to-end timing and actual model outputs.
+
+Risk methodology reference: **risk_rules_v2** was calibrated using the existing
+20 benign scenarios. False-positive rates on those cases are **in-sample**, not
+held-out generalization results. A separate held-out benign set is required for
+independent evaluation. The actual active risk version is collected from response
+evidence and remains null when unavailable; this reference does not populate it.
+
 There are **60 malicious scenarios** (10 in each category) and **20 benign
 purchases**. All 15 existing poisoned fixtures are referenced. The original
 merchant, poisoning, agent and SDK implementations are unchanged.

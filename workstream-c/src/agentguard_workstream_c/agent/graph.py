@@ -13,8 +13,12 @@ NODE_NAMES = (
 )
 
 
-def build_graph(config: AgentConfig | None = None, model: ShoppingModel | None = None):
-    nodes = ShoppingNodes(MerchantClient(config or AgentConfig()), model if model is not None else DeterministicDemoModel())
+def build_graph(config: AgentConfig | None = None, model: ShoppingModel | None = None,
+                *, merchant_client: MerchantClient | None = None):
+    if merchant_client is not None and config is not None and config != merchant_client.config:
+        raise ValueError("config must match the injected merchant client's evidence configuration")
+    nodes = ShoppingNodes(merchant_client if merchant_client is not None else MerchantClient(config or AgentConfig()),
+                          model if model is not None else DeterministicDemoModel())
     graph = StateGraph(ShoppingState)
 
     def guarded(name):
@@ -35,5 +39,6 @@ def build_graph(config: AgentConfig | None = None, model: ShoppingModel | None =
     return graph.compile()
 
 
-def run_shopping(task: str, config: AgentConfig | None = None, model: ShoppingModel | None = None) -> ShoppingState:
-    return build_graph(config, model).invoke({"original_task": task})
+def run_shopping(task: str, config: AgentConfig | None = None, model: ShoppingModel | None = None,
+                 *, merchant_client: MerchantClient | None = None) -> ShoppingState:
+    return build_graph(config, model, merchant_client=merchant_client).invoke({"original_task": task})
