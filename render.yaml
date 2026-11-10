@@ -1,54 +1,87 @@
-# Render free web instances can sleep when idle. Keep private-network services and Postgres in one region.
 services:
+  # -------------------------------------------------------------
+  # 1. AgentGuard Core Gateway (Go) - Workstream A (Vivek)
+  # -------------------------------------------------------------
   - type: web
     name: agentguard-gateway
     runtime: go
     branch: ritika
-    autoDeploy: true
     rootDir: gateway
-    region: oregon
-    plan: free
-    buildCommand: mkdir -p bin && go build -o bin/gateway .
+    plan: starter
+    buildCommand: go build -o bin/gateway ./cmd/gateway/main.go
     startCommand: ./bin/gateway
     healthCheckPath: /health
     envVars:
+      - key: PORT
+        value: 8080
+      - key: ENV
+        value: production
+      - key: DB_DRIVER
+        value: postgres
       - key: DATABASE_URL
         fromDatabase:
-          name: agentguard-db
+          name: agentguard-postgres
           property: connectionString
-      - key: INTELLIGENCE_HOSTPORT
+      - key: INTEL_SERVICE_URL
         fromService:
           type: web
-          name: agentguard-intelligence
+          name: agentguard-intel
           property: hostport
-      - key: CORS_ALLOWED_ORIGINS
-        sync: false # Set the exact public dashboard origin at Blueprint setup.
-      - key: PAYPAL_BASE_URL
-        value: https://api-m.sandbox.paypal.com
+      - key: INTEL_TIMEOUT_MS
+        value: 3000
+      - key: INTEL_API_TOKEN
+        generateValue: true
+      - key: INTERNAL_LEDGER_TOKEN
+        generateValue: true
+      - key: RISK_THRESHOLD_BLOCK
+        value: "0.65"
+      - key: RISK_THRESHOLD_STEPUP
+        value: "0.35"
+      - key: PAYPAL_ENV
+        value: sandbox
+      - key: PAYPAL_CLIENT_ID
+        sync: false
+      - key: PAYPAL_CLIENT_SECRET
+        sync: false
+      - key: PAYPAL_MOCK_MODE
+        value: "false"
+
+  # -------------------------------------------------------------
+  # 2. Intelligence Service (FastAPI) - Workstream B (Atul)
+  # -------------------------------------------------------------
+  - type: web
+    name: agentguard-intel
+    runtime: python
+    rootDir: intel
+    plan: starter
+    buildCommand: pip install -e .
+    startCommand: uvicorn intel.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: INTEL_MODE
+        value: live
+      - key: ANTHROPIC_API_KEY
+        sync: false
+      - key: INTEL_API_TOKEN
+        fromService:
+          type: web
+          name: agentguard-gateway
+          envVarKey: INTEL_API_TOKEN
+      - key: LEDGER_URL
+        fromService:
+          type: web
+          name: agentguard-gateway
+          property: hostport
+      - key: LEDGER_TOKEN
+        fromService:
+          type: web
+          name: agentguard-gateway
+          envVarKey: INTERNAL_LEDGER_TOKEN
       - key: PAYPAL_CLIENT_ID
         sync: false
       - key: PAYPAL_CLIENT_SECRET
         sync: false
       - key: PAYPAL_WEBHOOK_ID
-        sync: false
-      - key: MANDATE_PUBLIC_KEY
-        sync: false
-      - key: MANDATE_PRIVATE_KEY
-        sync: false
-
-  - type: web
-    name: agentguard-intelligence
-    runtime: python
-    branch: ritika
-    autoDeploy: true
-    rootDir: intelligence
-    region: oregon
-    plan: free
-    buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
-    healthCheckPath: /health
-    envVars:
-      - key: LLM_API_KEY
         sync: false
 
   - type: web
@@ -80,9 +113,11 @@ services:
           name: agentguard-gateway
           envVarKey: RENDER_EXTERNAL_URL
 
-# Postgres uses platform health monitoring. Run demo seeding manually from the deployment checklist.
 databases:
-  - name: agentguard-db
-    region: oregon
-    plan: free
-    ipAllowList: []
+  # -------------------------------------------------------------
+  # PostgreSQL Event-Sourced Ledger Store
+  # -------------------------------------------------------------
+  - name: agentguard-postgres
+    plan: starter
+    databaseName: agentguard
+    user: agentguard

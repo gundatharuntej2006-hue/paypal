@@ -1,0 +1,30 @@
+{
+  "description": "Standard RFC 8785 Ed25519 Mandate Signing Vector for cross-language validation (Go \u003c-\u003e Python)",
+  "private_key_base64": "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyB5tVYuj+ZU+UB4sRLoqYunkB+FOuaVvtfg45ELrQSWZA==",
+  "public_key_base64": "ebVWLo/mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ=",
+  "mandate": {
+    "mandate_id": "mdt_test_vector_001",
+    "principal_id": "principal_cross_lang",
+    "agent_id": "agent_shopper_lang",
+    "task": "Procure test equipment",
+    "currency": "USD",
+    "max_total": "250.00",
+    "max_per_txn": "100.00",
+    "step_up_over": "50.00",
+    "allowed_merchants": [
+      "merchant_staples",
+      "merchant_books_123"
+    ],
+    "allowed_categories": [
+      "books",
+      "office_supplies"
+    ],
+    "valid_from": "2026-11-09T10:00:00Z",
+    "expires_at": "2026-11-10T10:00:00Z",
+    "nonce": "nonce_fixed_vector_999",
+    "public_key": "ebVWLo/mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ=",
+    "signature": "5wz1emL1Vy6BURPS8J1qdOdMKdrOW5hWWVXp1zwVuqy/4sgWaEeegmOzKLvF14giQimRp6PzXpES5UcOp98wAQ=="
+  },
+  "canonical_json": "{\"agent_id\":\"agent_shopper_lang\",\"allowed_categories\":[\"books\",\"office_supplies\"],\"allowed_merchants\":[\"merchant_books_123\",\"merchant_staples\"],\"currency\":\"USD\",\"expires_at\":\"2026-11-10T10:00:00Z\",\"mandate_id\":\"mdt_test_vector_001\",\"max_per_txn\":\"100.00\",\"max_total\":\"250.00\",\"nonce\":\"nonce_fixed_vector_999\",\"principal_id\":\"principal_cross_lang\",\"public_key\":\"ebVWLo/mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ=\",\"step_up_over\":\"50.00\",\"task\":\"Procure test equipment\",\"valid_from\":\"2026-11-09T10:00:00Z\"}",
+  "signature_base64": "5wz1emL1Vy6BURPS8J1qdOdMKdrOW5hWWVXp1zwVuqy/4sgWaEeegmOzKLvF14giQimRp6PzXpES5UcOp98wAQ=="
+}
