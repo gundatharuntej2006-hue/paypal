@@ -72,11 +72,25 @@ class PageContent:
 
 
 @dataclass(frozen=True)
+class SelectionRationale:
+    """Concise auditable justification, not private chain-of-thought."""
+
+    summary: str
+    task_fit: str
+
+    def __post_init__(self):
+        for value in (self.summary, self.task_fit):
+            if not isinstance(value, str) or not value.strip() or len(value) > 400:
+                raise ValueError("rationale fields require 1 to 400 characters")
+
+
+@dataclass(frozen=True)
 class Selection:
     merchant_id: str
     product_id: str
     decision_summary: str
     source_references: tuple[str, ...]
+    rationale: SelectionRationale | None = None
 
     def __post_init__(self):
         for field in (self.merchant_id, self.product_id, self.decision_summary):
@@ -88,6 +102,30 @@ class Selection:
                 or any(not isinstance(ref, str) or not ref for ref in self.source_references)
                 or len(set(self.source_references)) != len(self.source_references)):
             raise ValueError("selection requires unique nonempty source references")
+        if self.rationale is not None and not isinstance(self.rationale, SelectionRationale):
+            raise ValueError("selection rationale must be structured")
+
+
+@dataclass(frozen=True)
+class ModelDecision:
+    """Explicit model outcome; a refusal is not a payment firewall block."""
+
+    outcome: Literal["purchase_proposal", "refusal", "no_match", "invalid_response"]
+    selection: Selection | None = None
+    rationale: SelectionRationale | None = None
+
+    def __post_init__(self):
+        if self.outcome not in ("purchase_proposal", "refusal", "no_match", "invalid_response"):
+            raise ValueError("unknown model outcome")
+        if self.outcome == "purchase_proposal":
+            if not isinstance(self.selection, Selection) or self.selection.rationale is None:
+                raise ValueError("purchase outcome requires a selection with rationale")
+            if self.rationale != self.selection.rationale:
+                raise ValueError("purchase rationale must match selection")
+        elif self.selection is not None:
+            raise ValueError("non-purchase outcome cannot include a selection")
+        if self.rationale is not None and not isinstance(self.rationale, SelectionRationale):
+            raise ValueError("model rationale must be structured")
 
 
 @dataclass(frozen=True)
@@ -117,6 +155,8 @@ class ShoppingState(TypedDict, total=False):
     selected_merchant: MerchantCandidate | None
     selected_product: ProductCandidate | None
     selection: Selection | None
+    model_decision: ModelDecision | None
+    model_error_code: str | None
     purchase_proposal: PurchaseProposal | None
     source_references: tuple[str, ...]
     execution_errors: tuple[str, ...]

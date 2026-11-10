@@ -6,8 +6,9 @@ evidence helper, 15 poisoned page fixtures, and a LangGraph shopping workflow ar
 implemented. The Gateway SDK is implemented with payment submission disabled by
 default and fake-transport validation only. A versioned 60-malicious/20-benign
 scenario library and offline benchmark runner are implemented. Actual gateway
-payment integration remains disabled. The shopping model is a deterministic
-demo, not an LLM.
+payment integration remains disabled. The default shopping model is a deterministic
+demo. An explicitly configured Anthropic model adapter is available separately;
+it has only been validated with offline provider doubles, not paid API calls.
 
 ## Modules
 
@@ -39,6 +40,7 @@ demo, not an LLM.
 This scaffold declares Python 3.11 or newer and uses setuptools with a `src/`
 layout. There are no mandatory runtime dependencies. The optional `dev` extra
 declares pytest; the `agent` extra declares `langgraph>=1.2.20,<2.0`.
+The optional `agent-provider` extra declares `anthropic>=1.0,<2.0`.
 
 When dependency installation is authorized, development setup from this directory
 can use `python -m pip install -e ".[dev]"`. No installation is required for import
@@ -46,7 +48,7 @@ tests if pytest is already available: run `python -m pytest` from this directory
 The pytest configuration adds `src/` to the import path.
 
 The `agent/` package uses LangGraph with a provider-neutral model interface.
-Provider-specific integrations remain deferred; none are installed by our extras.
+The Anthropic adapter imports its optional SDK only on explicit invocation.
 The merchant application operates independently of other packages and external services.
 
 ## Mock merchant application
@@ -275,6 +277,7 @@ Architecture under `src/agentguard_workstream_c/agent/`:
 | `merchant_client.py` | Bounded same-origin loopback HTTP browsing and explicit attack substitution |
 | `content.py` | Parse the existing HTML metadata, description paragraphs and review list; construct exact consumed-content evidence |
 | `model.py` | `ShoppingModel` protocol, immutable `ModelRequest`, small task parser, Decimal arithmetic and deterministic demo |
+| `anthropic_model.py` | Lazy, opt-in Anthropic Messages adapter with structured JSON and strict catalog/citation validation |
 | `nodes.py` | Eight node implementations |
 | `graph.py` | Explicit StateGraph, conditional error termination, `build_graph` and `run_shopping` |
 | `trace.py` | Concise decision summary and validated source citations |
@@ -368,11 +371,12 @@ instructions. These runs measure plumbing and exposure, not LLM susceptibility.
 
 Inject an adapter through `build_graph(config, model)` or
 `run_shopping(task, config, model)`. Implement `ShoppingModel.select(ModelRequest)`
-returning a validated `Selection` or None. Inputs include the original task,
+returning an explicit `ModelDecision`, or a legacy validated `Selection`/None.
+Inputs include the original task,
 constraints, candidates, exact consumed pages, and references. Return only a
 short decision summary and citations; never request or persist private
-chain-of-thought. There is no provider integration, key lookup, or paid call.
-Use a separate, explicitly opted-in experiment for future live models.
+chain-of-thought. The default model and CLI never read provider credentials or
+call a provider. The optional Anthropic adapter requires explicit instantiation.
 
 This is an experimental shopping baseline, not an injection scanner or an
 AgentGuard-protected agent. An injected model's structurally valid but unsafe
@@ -382,6 +386,100 @@ Gateway SDK may submit payments, and only the Go gateway calls intelligence.
 No PayPal or intelligence endpoints or internal tokens are used here. Run the
 agent process without PayPal credentials and keep future provider secrets out
 of state, prompts, evidence, and logs.
+
+### Optional Anthropic shopping model
+
+Install only when provider use is authorized, inside the Workstream C environment:
+
+```powershell
+.\.venv\Scripts\python.exe -m pip install -e ".[agent,agent-provider]" -c constraints-agent-windows.txt
+```
+
+No provider package was installed during this implementation. Python 3.11+ remains
+supported by this package. The optional SDK major range uses the current
+[Anthropic structured-output API](https://platform.claude.com/docs/en/build-with-claude/structured-outputs)
+(`output_config.format`, JSON schema). Choose a model/account that supports it;
+unsupported models yield a provider error, with no fallback or format downgrade.
+
+Configuration names (configure secrets outside source control):
+
+| Variable | Purpose |
+| --- | --- |
+| `ANTHROPIC_API_KEY` | Provider credential, read only when constructing a real client on first selection |
+| `AGENTGUARD_SHOPPING_MODEL` | Required explicit shopping-model ID for `from_env()`; no default model |
+| `AGENTGUARD_SHOPPING_TIMEOUT_SECONDS` | Optional finite timeout in seconds, default 30, greater than 0 and at most 120 |
+
+These are independent of `INTEL_SCAN_MODEL`, `INTEL_JUDGE_MODEL` and
+`INTEL_DEADLINE_S`. No intelligence token, gateway token or PayPal credential is
+read. The real client is fixed to `https://api.anthropic.com`; no environment base
+URL override is used by the adapter. Credentials stay in the provider client,
+outside graph state, prompts and model metadata. Do not enable SDK debug logging
+for sensitive experiments. Provider SDK timeouts are request timeouts, not a
+strict wall-clock deadline for a whole graph run.
+
+Explicit use after configuring the environment and starting the local merchants
+(this invokes a paid provider; it was NOT executed during validation):
+
+```python
+from agentguard_workstream_c.agent.anthropic_model import AnthropicShoppingModel
+from agentguard_workstream_c.agent.graph import run_shopping
+from agentguard_workstream_c.agent.state import AgentConfig
+
+model = AnthropicShoppingModel.from_env()
+# Or AnthropicShoppingModel(model_id="YOUR_APPROVED_MODEL_ID", timeout=30)
+state = run_shopping("Buy 2 USB-C hubs under 70 USD",
+                     AgentConfig(reader_mode="raw_html"), model=model)
+```
+
+For offline use, keep the existing CLI or call `run_shopping(task, config)` with
+no model argument; `DeterministicDemoModel` remains the default and needs no key.
+Tests may inject `client=` or a lazy `client_factory=` into the Anthropic adapter.
+Injected factories/clients are trusted test boundaries; their retry/transport
+settings are the caller's responsibility. The default SDK client uses
+`max_retries=0`, and the adapter never retries or substitutes the demo model.
+
+Provider JSON has exactly `decision`, `proposal` and `rationale`:
+
+- `decision`: `purchase_proposal`, `refusal`, `no_match`, or `invalid_response`.
+- `proposal`: null for non-purchase outcomes; otherwise exactly `merchant_id`,
+  `product_id`, `unit_price`, `currency`, `quantity`, `total`, `source_references`.
+- `rationale`: exactly `summary` and `task_fit`, each 1–400 characters of concise
+  justification. No private chain-of-thought is requested.
+
+All fields are required; unknown properties, duplicate JSON keys, non-finite
+numbers, missing/duplicate/unknown citations, and invented identifiers are
+rejected. Prices/totals must be unsigned Decimal strings (at most 12 integer
+digits and two decimal places), equal to the catalog and task quantity. Quantity
+must be an integer, not a bool or float. Citations must include the selected
+product's retrieved page. Task currency and parsed budget are enforced locally
+and rechecked in the graph. The graph calculates the authoritative proposal
+amount itself; echoed model money never becomes authoritative.
+
+`state["model_decision"]` retains the explicit outcome, validated selection and
+structured rationale. Legacy demo `Selection`/None remains supported.
+Refusal, no-match and invalid output stop the graph with distinct errors and no
+proposal. Provider-level `stop_reason="refusal"` is a refusal even without JSON;
+empty, truncated, oversized (over 64 KiB UTF-8), unexpected block/stop formats or
+malformed responses become `invalid_response`. No raw invalid response is kept.
+Invocation failures raise sanitized `ShoppingModelError` with `timeout`,
+`rate_limit`, `authentication`, `connection`, `provider`, `configuration`, or
+`dependency` codes. The graph retains only `model_error_code`, never raw provider
+error text or chained exceptions. Provider failures are not refusals or purchases.
+
+The system prompt labels all merchant content as untrusted and preserves the
+original task as authority. Exact consumed page content is JSON-encoded without
+filtering attacks or truncation. Raw HTML remains in graph SourceContexts;
+`raw_html` reader mode also supplies it to the model. `visible_text` uses the
+existing reader and does not expose hidden instructions to the model. Prompt
+instructions alone are not proof of injection resistance. Catalog metadata is
+retrieved evidence, not authenticated seller data. The small task parser remains
+limited (not arbitrary language/allowlist understanding). This is still a
+shopping baseline, not a firewall authorization or benchmark result. The SDK,
+payment submission gate and benchmark's genuine-executor rejection are unchanged.
+
+`tests/test_anthropic_model.py` blocks socket connects and DNS, uses fake provider
+responses and in-memory graph retrieval, and covers all 15 poisoned HTML variants.
+No provider requests, gateway calls, intelligence calls or payments are performed.
 
 Agent tests use deterministic doubles and actual ephemeral loopback servers.
 They cover graph transitions, both content modes, all 15 attacks, metadata,

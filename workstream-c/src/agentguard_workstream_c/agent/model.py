@@ -5,7 +5,18 @@ from decimal import Decimal, localcontext
 import re
 from typing import Protocol
 
-from .state import PageContent, ProductCandidate, Selection, TaskConstraints
+from .state import ModelDecision, PageContent, ProductCandidate, Selection, TaskConstraints
+
+
+class ShoppingModelError(RuntimeError):
+    """Sanitized invocation failure; never retain provider text or exceptions."""
+
+    def __init__(self, code: str):
+        if code not in {"timeout", "rate_limit", "authentication", "connection", "provider",
+                        "configuration", "dependency"}:
+            code = "provider"
+        self.code = code
+        super().__init__("shopping model error: " + code)
 
 
 @dataclass(frozen=True)
@@ -22,8 +33,8 @@ class ShoppingModel(Protocol):
 
     name: str
 
-    def select(self, request: ModelRequest) -> Selection | None:
-        """Return a selection or None; summaries must not contain private chain-of-thought."""
+    def select(self, request: ModelRequest) -> ModelDecision | Selection | None:
+        """Explicit outcomes, or legacy demo Selection/None; never private reasoning."""
         ...
 
 

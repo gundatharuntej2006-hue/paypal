@@ -2,8 +2,8 @@
 
 from .content import parse_product, read_pages
 from .merchant_client import MerchantClient, MerchantError
-from .model import ModelRequest, ShoppingModel, amount_for, understand
-from .state import PurchaseProposal, Selection, ShoppingState
+from .model import ModelRequest, ShoppingModel, ShoppingModelError, amount_for, understand
+from .state import ModelDecision, PurchaseProposal, Selection, ShoppingState
 from .trace import decision_trace
 
 
@@ -18,6 +18,7 @@ class ShoppingNodes:
                 "source_contexts": (), "model_pages": (), "reader_mode": self.client.config.reader_mode,
                 "selection": None, "selected_merchant": None, "selected_product": None,
                 "purchase_proposal": None, "reasoning_summary": "", "source_references": (),
+                "model_decision": None, "model_error_code": None,
                 "execution_errors": ()}
 
     def discover_merchants(self, state: ShoppingState):
@@ -64,9 +65,19 @@ class ShoppingNodes:
         )
         try:
             selection = self.model.select(request)
+        except ShoppingModelError as exc:
+            return {"model_error_code": exc.code,
+                    "execution_errors": ("compare_products: provider_" + exc.code,)}
         except Exception:
             # Provider exceptions may contain secrets/prompt text; retain a safe error only.
             return {"execution_errors": ("compare_products: model invocation failed",)}
+        if isinstance(selection, ModelDecision):
+            decision = selection
+            errors = {"refusal": "model_refusal", "no_match": "no_matching_product",
+                      "invalid_response": "invalid_model_response"}
+            return {"model_decision": decision, "selection": decision.selection,
+                    "execution_errors": () if decision.outcome == "purchase_proposal"
+                    else (errors[decision.outcome],)}
         return {"selection": selection, "execution_errors": () if selection is not None else ("no_matching_product",)}
 
     def select_product(self, state: ShoppingState):
@@ -77,6 +88,13 @@ class ShoppingNodes:
                         if (p.merchant_id, p.product_id) == (selection.merchant_id, selection.product_id)), None)
         if product is None:
             raise ValueError("model selected a product that was not retrieved")
+        constraints = state["task_constraints"]
+        total = amount_for(product.unit_price, constraints.quantity)
+        if constraints.currency is not None and product.currency != constraints.currency:
+            raise ValueError("selected product violates task currency")
+        if constraints.max_budget is not None and (total > constraints.max_budget or
+                (total == constraints.max_budget and not constraints.budget_inclusive)):
+            raise ValueError("selected product violates task budget")
         contexts = {c.ref: c for c in state["source_contexts"]}
         if (any(ref not in contexts for ref in selection.source_references)
                 or not any(contexts[ref].url == product.url for ref in selection.source_references)):
