@@ -12,7 +12,7 @@ if TYPE_CHECKING:
 
 def intent_from_proposal(proposal: "PurchaseProposal", *, mandate: Mapping[str, Any],
                          reasoning_summary: str, source_contexts: Sequence[SourceContext],
-                         idempotency_key: str) -> PaymentIntent:
+                         idempotency_key: str, agent_id: str, dry_run: bool = True) -> PaymentIntent:
     """Build only. Signed mandate and UUID must be supplied externally.
 
     Product IDs and source-reference lists remain internal; they are not invented
@@ -32,4 +32,5 @@ def intent_from_proposal(proposal: "PurchaseProposal", *, mandate: Mapping[str, 
         amount=proposal.amount, currency=proposal.currency, category=proposal.category,
         items=(PaymentItem(proposal.product_name, proposal.quantity, proposal.unit_price, proposal.category),),
         agent_reasoning=reasoning_summary, source_contexts=contexts, idempotency_key=idempotency_key,
+        agent_id=agent_id, dry_run=dry_run,
     )

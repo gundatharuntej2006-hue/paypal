@@ -17,10 +17,11 @@ from agentguard_workstream_c.sdk.exceptions import (
     GatewayConnectionError, GatewayHTTPError, GatewayTimeoutError, IdempotencyConflictError,
     InvalidResponseError, RedirectRefusedError, ResponseTooLargeError, SubmissionDisabledError, ValidationError,
 )
-from agentguard_workstream_c.sdk.models import DecisionResponse, money
+from agentguard_workstream_c.sdk.models import DecisionResponse, MAX_REQUEST_BYTES, money
 from agentguard_workstream_c.sdk.transport import TransportResponse, UrllibTransport, _RefuseRedirects
 
 KEY = "D7B4E601-37F2-4217-BFD8-FA3958F27663"
+TEST_GATEWAY_TOKEN = "fake-transport-only-token"
 
 
 @pytest.fixture(autouse=True)
@@ -55,7 +56,7 @@ def signed_mandate():
 def fields(signed_mandate):
     return dict(mandate=signed_mandate, merchant_id="merchant_a", amount=Decimal("29.99"), currency="USD",
                 items=(PaymentItem("USB-C hub", 1, Decimal("29.99")),),
-                agent_reasoning="Selected an offer matching the task.", idempotency_key=KEY)
+                agent_reasoning="Selected an offer matching the task.", idempotency_key=KEY, agent_id="shopper")
 
 
 def decision_payload(decision="allow"):
@@ -63,6 +64,7 @@ def decision_payload(decision="allow"):
         "payment_id": "pay_test", "decision": decision, "risk_score": 0.12,
         "reasons": ["test_reason"], "checks": {"mandate": "pass", "injection": "pass", "intent": "pass", "risk": "pass"},
         "audit_event_id": "evt_test",
+        "dry_run": True,
     }
 
 
@@ -81,7 +83,8 @@ class FakeTransport:
 
 def enabled(fake, **options):
     # Enables only the injected fake; no real transport is used by this helper.
-    return GuardClient("https://gateway.invalid", transport=fake, payment_submission_enabled=True, **options)
+    return GuardClient("https://gateway.invalid", transport=fake,
+                       **{"payment_submission_enabled": True, "gateway_token": TEST_GATEWAY_TOKEN, **options})
 
 
 def test_disabled_submission_zero_requests(fields):
@@ -109,7 +112,8 @@ def test_exact_serialization_and_mandate_snapshot(fields, signed_mandate):
     assert len(fake.calls) == 1
     call = fake.calls[0]
     assert call["url"] == "https://gateway.invalid/v1/payments/intents"
-    assert call["headers"] == {"Content-Type": "application/json", "Accept": "application/json"}
+    assert call["headers"] == {"Content-Type": "application/json", "Accept": "application/json",
+                               "Authorization": "Bearer " + TEST_GATEWAY_TOKEN}
     assert call["timeout"] == 7
     body = json.loads(call["body"])
     assert body == {
@@ -117,6 +121,7 @@ def test_exact_serialization_and_mandate_snapshot(fields, signed_mandate):
         "amount": "29.99", "currency": "USD", "category": "electronics_accessories",
         "items": [{"name": "USB-C hub", "qty": 1, "unit_price": "29.99"}],
         "agent_reasoning": fields["agent_reasoning"], "idempotency_key": KEY,
+        "agent_id": "shopper", "dry_run": True,
         "source_contexts": [context.to_dict()],
     }
     assert body["source_contexts"][0]["html"] == html
@@ -236,6 +241,7 @@ def test_business_decisions_and_approval_url(fields, decision):
         data["paypal"] = None
     result = enabled(FakeTransport(TransportResponse(200, json.dumps(data).encode()))).request_payment(**fields)
     assert result.decision == decision and result.risk_score == Decimal("0.12")
+    assert result.dry_run is True
     assert result.checks.mandate == "pass" and result.reasons == ("test_reason",)
     if decision == "step_up":
         assert result.paypal.approval_url == "https://approval.invalid/test"
@@ -402,23 +408,213 @@ def test_offline_agent_boundary(fields):
     proposal = PurchaseProposal("merchant_a", "Northstar Office", "usb-c-hub", "USB-C hub", 1,
                                 Decimal("29.99"), Decimal("29.99"), "USD", "electronics_accessories", (context.ref,))
     intent = intent_from_proposal(proposal, mandate=fields["mandate"], reasoning_summary="Task match.",
-                                  source_contexts=(context,), idempotency_key=KEY)
+                                  source_contexts=(context,), idempotency_key=KEY, agent_id="shopper")
     body = intent.to_dict()
     assert "product_id" not in body and "source_references" not in body
     assert body["items"] == [{"name": "USB-C hub", "qty": 1, "unit_price": "29.99", "category": "electronics_accessories"}]
     assert body["source_contexts"][0]["html"] == context.html
     assert body["agent_reasoning"] == "Task match."
+    assert body["agent_id"] == "shopper" and body["dry_run"] is True
     with pytest.raises(ValidationError, match="unavailable"):
-        intent_from_proposal(proposal, mandate=fields["mandate"], reasoning_summary="Task match.", source_contexts=(), idempotency_key=KEY)
+        intent_from_proposal(proposal, mandate=fields["mandate"], reasoning_summary="Task match.",
+                             source_contexts=(), idempotency_key=KEY, agent_id="shopper")
 
 
-def test_no_credential_headers_or_environment_lookup(fields, monkeypatch):
+def test_only_explicit_gateway_credential_no_environment_lookup(fields, monkeypatch):
     monkeypatch.setenv("PAYPAL_CLIENT_SECRET", "paypal-canary")
     monkeypatch.setenv("INTEL_API_TOKEN", "intel-canary")
     monkeypatch.setenv("OPENAI_API_KEY", "provider-canary")
+    monkeypatch.setenv("AGENT_AUTH_TOKEN", "environment-gateway-canary")
     monkeypatch.setenv("HTTP_PROXY", "http://user:password@untrusted.invalid:8080")
     fake = FakeTransport()
     enabled(fake).request_payment(**fields)
     call = fake.calls[0]
-    assert set(call["headers"]) == {"Content-Type", "Accept"}
-    assert all(canary not in repr(call) for canary in ("paypal-canary", "intel-canary", "provider-canary"))
+    assert set(call["headers"]) == {"Content-Type", "Accept", "Authorization"}
+    assert call["headers"]["Authorization"] == "Bearer " + TEST_GATEWAY_TOKEN
+    assert "X-Internal-Token" not in call["headers"]
+    assert all(canary not in repr(call) for canary in (
+        "paypal-canary", "intel-canary", "provider-canary", "environment-gateway-canary"))
+
+
+def test_authentication_is_required_for_explicit_network_opt_in(fields, monkeypatch):
+    fake = FakeTransport()
+    monkeypatch.setenv("AGENT_AUTH_TOKEN", "must-not-be-read")
+    with pytest.raises(ValidationError, match="gateway_token"):
+        GuardClient("https://gateway.invalid", payment_submission_enabled=True, transport=fake)
+    assert fake.calls == []
+
+
+@pytest.mark.parametrize("token", ["", " ", "bad token", "bad\r\nheader", "bad\tvalue", "bad\x00value", "é", 123, True])
+def test_invalid_authentication_never_echoed_or_submitted(fields, token, capsys, caplog):
+    fake = FakeTransport()
+    with pytest.raises(ValidationError) as exc:
+        enabled(fake, gateway_token=token).request_payment(**fields)
+    assert str(exc.value) == "gateway_token must be a nonempty visible ASCII token without whitespace"
+    assert not fake.calls
+    assert capsys.readouterr() == ("", "") and caplog.text == ""
+
+
+def test_credential_is_not_in_body_representations_or_logs(fields, capsys, caplog):
+    fake = FakeTransport()
+    client = enabled(fake)
+    intent = PaymentIntent(**fields)
+    decision = client.request_payment(intent)
+    assert TEST_GATEWAY_TOKEN not in repr(client)
+    assert TEST_GATEWAY_TOKEN not in repr(intent)
+    assert TEST_GATEWAY_TOKEN not in repr(decision)
+    assert TEST_GATEWAY_TOKEN.encode() not in fake.calls[0]["body"]
+    assert capsys.readouterr() == ("", "") and caplog.text == ""
+
+
+def test_configured_authentication_does_not_enable_network(fields):
+    fake = FakeTransport()
+    client = GuardClient("https://gateway.invalid", gateway_token=TEST_GATEWAY_TOKEN, transport=fake)
+    assert client.payment_submission_enabled is False
+    with pytest.raises(SubmissionDisabledError):
+        client.request_payment(**fields)
+    assert not fake.calls
+
+
+@pytest.mark.parametrize("identity", [None, "", " ", " shopper", "shopper ", "shopper\n", "shop\x00per", 123, True, "other-agent"])
+def test_agent_identity_is_explicit_valid_and_matches_mandate(fields, identity):
+    fake = FakeTransport()
+    with pytest.raises(ValidationError):
+        enabled(fake).request_payment(**{**fields, "agent_id": identity})
+    assert not fake.calls
+
+
+def test_missing_agent_identity_is_not_inferred(fields):
+    fake = FakeTransport()
+    del fields["agent_id"]
+    with pytest.raises(ValidationError):
+        enabled(fake).request_payment(**fields)
+    assert not fake.calls
+
+
+@pytest.mark.parametrize("dry_run", [False, None, 0, 1, "true", "false"])
+def test_no_live_mode_or_truthy_dry_run_fallback(fields, dry_run):
+    fake = FakeTransport()
+    with pytest.raises(ValidationError, match="dry_run=True"):
+        enabled(fake).request_payment(**{**fields, "dry_run": dry_run})
+    assert not fake.calls
+
+
+def test_submission_sends_exact_dry_run_mechanism(fields):
+    fake = FakeTransport()
+    enabled(fake).request_payment(**{**fields, "dry_run": True})
+    call = fake.calls[0]
+    body = json.loads(call["body"])
+    assert body["dry_run"] is True and body["agent_id"] == fields["agent_id"]
+    assert "?" not in call["url"]
+    assert "X-Dry-Run" not in call["headers"]  # Body field is the chosen Go-supported mechanism.
+    assert "X-Internal-Token" not in call["headers"]
+    assert len(fake.calls) == 1
+
+
+@pytest.mark.parametrize("decision", ["allow", "step_up", "block"])
+@pytest.mark.parametrize("ack", ["missing", False, None, 0, 1, "true", "false", {}, []])
+def test_missing_live_or_malformed_acknowledgment_is_ambiguous(fields, decision, ack):
+    data = decision_payload(decision)
+    if ack == "missing":
+        del data["dry_run"]
+    else:
+        data["dry_run"] = ack
+    fake = FakeTransport(TransportResponse(200, json.dumps(data).encode()))
+    with pytest.raises(InvalidResponseError) as exc:
+        enabled(fake).request_payment(**fields)
+    assert exc.value.outcome_unknown and exc.value.idempotency_key == KEY
+    assert len(fake.calls) == 1
+
+
+def test_response_model_distinguishes_missing_live_and_dry_acknowledgment():
+    for ack in (False, True):
+        data = decision_payload()
+        data["dry_run"] = ack
+        assert DecisionResponse.from_dict(data).dry_run is ack
+    data.pop("dry_run")
+    assert DecisionResponse.from_dict(data).dry_run is None
+
+
+@pytest.mark.parametrize("field,value", [("text", "é" * 100_000), ("html", "🛒" * 250_000)])
+def test_context_utf8_exact_limits_preserve_evidence(fields, field, value):
+    context = SourceContext(ref="boundary", **{"text": "read", field: value})
+    fake = FakeTransport()
+    enabled(fake).request_payment(**{**fields, "source_contexts": (context,)})
+    submitted = json.loads(fake.calls[0]["body"])["source_contexts"][0]
+    assert submitted[field] == value
+    assert submitted[field].encode("utf-8") == value.encode("utf-8")
+
+
+@pytest.mark.parametrize("field,value", [("text", "é" * 100_001), ("html", "🛒" * 250_001)])
+def test_context_utf8_overflow_rejected_without_truncation(fields, field, value):
+    context = SourceContext(ref="oversize", **{"text": "read", field: value})
+    fake = FakeTransport()
+    with pytest.raises(ValidationError, match="UTF-8 limit"):
+        enabled(fake).request_payment(**{**fields, "source_contexts": (context,)})
+    assert getattr(context, field) == value and not fake.calls
+
+
+def test_context_count_exactly_fifty_accepted(fields):
+    fake = FakeTransport()
+    contexts = tuple(SourceContext(ref=str(i), text="read") for i in range(50))
+    enabled(fake).request_payment(**{**fields, "source_contexts": contexts})
+    assert len(json.loads(fake.calls[0]["body"])["source_contexts"]) == 50
+
+
+@pytest.mark.parametrize("field", ["text", "html"])
+def test_invalid_utf8_context_is_rejected_before_transport(fields, field):
+    fake = FakeTransport()
+    context = SourceContext(ref="invalid", **{"text": "read", field: "\ud800"})
+    with pytest.raises(ValidationError, match="UTF-8"):
+        enabled(fake).request_payment(**{**fields, "source_contexts": (context,)})
+    assert not fake.calls
+
+
+def test_serialized_body_exact_limit_and_one_byte_over(fields):
+    fields["merchant_name"] = ""
+    base_size = len(PaymentIntent(**fields).to_json())
+    fields["merchant_name"] = "x" * (MAX_REQUEST_BYTES - base_size)
+    fake = FakeTransport()
+    enabled(fake).request_payment(**fields)
+    assert len(fake.calls[0]["body"]) == 2 * 1024 * 1024
+    fields["merchant_name"] += "x"
+    rejected = FakeTransport()
+    with pytest.raises(ValidationError, match="2 MiB"):
+        enabled(rejected).request_payment(**fields)
+    assert not rejected.calls
+
+
+def test_body_limit_counts_utf8_and_json_escaping(fields):
+    # Individually valid evidence fields; JSON quote escaping pushes the body over 2 MiB.
+    context = SourceContext(ref="escaped", text='"' * 200_000, html='"' * 1_000_000)
+    fake = FakeTransport()
+    with pytest.raises(ValidationError, match="2 MiB"):
+        enabled(fake).request_payment(**{**fields, "source_contexts": (context,)})
+    assert not fake.calls
+
+
+def test_aggregate_body_limit_without_losing_any_context(fields):
+    contexts = tuple(SourceContext(ref=str(i), text="read", html="x" * 750_000) for i in range(3))
+    fake = FakeTransport()
+    with pytest.raises(ValidationError, match="2 MiB"):
+        enabled(fake).request_payment(**{**fields, "source_contexts": contexts})
+    assert len(contexts) == 3 and all(len(c.html) == 750_000 for c in contexts)
+    assert not fake.calls
+
+
+def test_downstream_reasoning_limit_is_characters(fields):
+    fake = FakeTransport()
+    enabled(fake).request_payment(**{**fields, "agent_reasoning": "é" * 50_000})
+    assert json.loads(fake.calls[0]["body"])["agent_reasoning"] == "é" * 50_000
+    rejected = FakeTransport()
+    with pytest.raises(ValidationError, match="50000 characters"):
+        enabled(rejected).request_payment(**{**fields, "agent_reasoning": "é" * 50_001})
+    assert not rejected.calls
+
+
+def test_boundary_rejects_live_mode_without_transport(fields):
+    proposal = PurchaseProposal("merchant_a", "Northstar Office", "usb-c-hub", "USB-C hub", 1,
+                                Decimal("29.99"), Decimal("29.99"), "USD", "electronics_accessories", ())
+    with pytest.raises(ValidationError, match="dry_run=True"):
+        intent_from_proposal(proposal, mandate=fields["mandate"], reasoning_summary="Task match.",
+                             source_contexts=(), idempotency_key=KEY, agent_id="shopper", dry_run=False)

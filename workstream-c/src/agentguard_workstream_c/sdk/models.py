@@ -14,12 +14,32 @@ from ..merchants.source_context import SourceContext, validate_contexts
 from .exceptions import ValidationError
 
 Decision = Literal["allow", "step_up", "block"]
+MAX_REQUEST_BYTES = 2 * 1024 * 1024
+MAX_CONTEXT_TEXT_BYTES = 200_000
+MAX_CONTEXT_HTML_BYTES = 1_000_000
+MAX_REASONING_CHARACTERS = 50_000  # Downstream judge_intent.request.schema.json.
 
 
 def string(value, name: str) -> str:
     if not isinstance(value, str):
         raise ValidationError(f"{name} must be a string")
     return value
+
+
+def _agent_identity(value) -> str:
+    string(value, "agent_id")
+    if not value or value != value.strip() or any(ord(char) < 32 or ord(char) == 127 for char in value):
+        raise ValidationError("agent_id must be a nonempty identity without surrounding whitespace or controls")
+    return value
+
+
+def _check_utf8_limit(value: str, name: str, limit: int) -> None:
+    try:
+        size = len(value.encode("utf-8"))
+    except UnicodeError:
+        raise ValidationError(f"{name} must be valid UTF-8") from None
+    if size > limit:
+        raise ValidationError(f"{name} exceeds the {limit}-byte UTF-8 limit")
 
 
 def money(value: str | Decimal, name: str = "amount") -> str:
@@ -139,17 +159,26 @@ class PaymentIntent:
     items: tuple[PaymentItem, ...]
     agent_reasoning: str = field(repr=False)
     idempotency_key: str
+    agent_id: str
     merchant_name: str | None = None
     category: str | None = None
     source_contexts: tuple[SourceContext, ...] | None = field(default=None, repr=False)
+    dry_run: bool = True
     _mandate_json: str = field(init=False, repr=False)
 
     def __post_init__(self):
         snapshot = _mandate_snapshot(self.mandate)
         object.__setattr__(self, "_mandate_json", snapshot)
         object.__setattr__(self, "mandate", _freeze(json.loads(snapshot)))
+        _agent_identity(self.agent_id)
+        if self.agent_id != self.mandate["agent_id"]:
+            raise ValidationError("agent_id must match the supplied signed mandate; this does not establish ownership")
+        if self.dry_run is not True:
+            raise ValidationError("only dry_run=True is supported; live payment submission is unavailable")
         string(self.merchant_id, "merchant_id")
         string(self.agent_reasoning, "agent_reasoning")
+        if len(self.agent_reasoning) > MAX_REASONING_CHARACTERS:
+            raise ValidationError("agent_reasoning exceeds the downstream judge limit of 50000 characters")
         object.__setattr__(self, "amount", money(self.amount))
         currency(self.currency)
         if not isinstance(self.items, (tuple, list)) or not self.items or any(not isinstance(item, PaymentItem) for item in self.items):
@@ -168,12 +197,17 @@ class PaymentIntent:
             except (ValueError, TypeError):
                 raise ValidationError("source_contexts must contain at most 50 validated SourceContext objects") from None
             object.__setattr__(self, "source_contexts", contexts)
+            for context in contexts:
+                _check_utf8_limit(context.text, "source_context.text", MAX_CONTEXT_TEXT_BYTES)
+                if context.html is not None:
+                    _check_utf8_limit(context.html, "source_context.html", MAX_CONTEXT_HTML_BYTES)
 
     def to_dict(self) -> dict:
         result = {"mandate": json.loads(self._mandate_json), "merchant_id": self.merchant_id,
                   "amount": self.amount, "currency": self.currency,
                   "items": [item.to_dict() for item in self.items],
-                  "agent_reasoning": self.agent_reasoning, "idempotency_key": self.idempotency_key}
+                  "agent_reasoning": self.agent_reasoning, "idempotency_key": self.idempotency_key,
+                  "agent_id": self.agent_id, "dry_run": self.dry_run}
         for name in ("merchant_name", "category"):
             if getattr(self, name) is not None:
                 result[name] = getattr(self, name)
@@ -186,9 +220,12 @@ class PaymentIntent:
 
     def to_json(self) -> bytes:
         try:
-            return json.dumps(self.to_dict(), ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode("utf-8")
+            body = json.dumps(self.to_dict(), ensure_ascii=False, allow_nan=False, separators=(",", ":")).encode("utf-8")
         except (UnicodeError, ValueError):
             raise ValidationError("intent cannot be encoded as UTF-8 JSON") from None
+        if len(body) > MAX_REQUEST_BYTES:
+            raise ValidationError("serialized request body exceeds the 2 MiB gateway limit")
+        return body
 
 
 @dataclass(frozen=True)
@@ -218,6 +255,7 @@ class DecisionResponse:
     audit_event_id: str
     paypal: PayPalDetails | None = None
     step_up_token: str | None = field(default=None, repr=False)
+    dry_run: bool | None = None
 
     @classmethod
     def from_dict(cls, data: dict) -> "DecisionResponse":
@@ -252,6 +290,9 @@ class DecisionResponse:
         token = data.get("step_up_token")
         if token is not None:
             string(token, "step_up_token")
+        dry_run = data.get("dry_run")
+        if "dry_run" in data and type(dry_run) is not bool:
+            raise ValidationError("dry_run acknowledgment must be a JSON boolean")
         return cls(data["payment_id"], data["decision"], score, tuple(reasons),
                    Checks(**{key: checks[key] for key in Checks.__dataclass_fields__}),
-                   data["audit_event_id"], paypal, token)
+                   data["audit_event_id"], paypal, token, dry_run)

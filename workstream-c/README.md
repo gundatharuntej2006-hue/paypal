@@ -389,161 +389,192 @@ proposals, original-task retention, citations, count/size bounds, malformed
 responses, timeouts, redirects, URL restrictions, and absence of nonmerchant
 network calls. Existing merchant and evidence regressions remain enabled.
 
-## Python Gateway SDK (offline validated, submission disabled)
+## Python Gateway SDK (offline default, dry-run submissions only)
 
-The SDK follows `contracts/mandate.schema.json`, `payment_intent.schema.json`,
-`decision.schema.json` and `gateway/pkg/models/models.go` inspected on
-`origin/vivek` at `248201b1578c6c98496afecd984e1cb9f5b36a62`.
-It uses the Python standard library and adds no dependencies. It does not import
-LangGraph, implement a signer, or create an intelligence/PayPal client.
+The SDK follows the gateway source at commit
+`e916d6d6b029f1e2a7bc4c6ed5c3e36bfb6cc5cc`, inspected directly on
+`origin/vivek`. The public payment-intent and decision schemas still omit the
+implemented `agent_id` and `dry_run` extensions. Their authority here is
+`gateway/pkg/models/models.go:55-112` and `gateway/pkg/api/handlers.go:120-198`.
+No shared schema is created or changed by Workstream C.
+
+There are no additional dependencies, signing implementation, PayPal clients or
+intelligence clients in this SDK. The shopping graph remains offline from payment
+submission. A future reviewed benchmark adapter can receive a configured
+`GuardClient` through dependency injection; the existing executor is unchanged
+and continues to reject genuine gateway adapters.
 
 | SDK module | Responsibility |
 | --- | --- |
-| `models.py` | Validated PaymentItem/PaymentIntent, immutable mandate snapshot, typed DecisionResponse/Checks/PayPalDetails |
-| `client.py` | GuardClient, explicit submission gate, JSON serialization, HTTP/decision error handling |
-| `transport.py` | Injectable Transport protocol and one-shot UrllibTransport; bounded responses, timeout, no proxies/redirects |
-| `exceptions.py` | Local validation/gating errors and remote HTTP/connection/timeout/protocol errors |
-| `boundary.py` | Offline `intent_from_proposal` mapping, never payment execution |
+| `models.py` | PaymentItem/PaymentIntent validation, unchanged signed mandate snapshot, source evidence and byte limits, typed decisions and dry-run acknowledgment |
+| `client.py` | Offline gate, explicit gateway credential, one authenticated dry-run request, acknowledgment enforcement and typed errors |
+| `transport.py` | Injectable one-shot transport, bounded responses, timeout, no proxies or redirects |
+| `exceptions.py` | Local validation/gating errors and ambiguous remote/transport errors |
+| `boundary.py` | Offline proposal-to-intent mapping; never executes a request |
 
-### Prepare an intent without submitting
+### Prepare an intent offline
 
-The following uses a completed agent state and a signed mandate issued externally.
-It does not add a payment node or change the shopping graph:
+A completed shopping workflow, signed mandate and matching agent identity are
+provided by the external caller. Credentials never belong in graph state.
 
 ```python
 from uuid import uuid4
 from agentguard_workstream_c.sdk import GuardClient, intent_from_proposal
 
-# state: completed shopping workflow; signed_mandate: externally supplied JSON object.
-logical_intent_key = str(uuid4())  # Generate ONCE and persist for this logical intent.
+logical_intent_key = str(uuid4())  # Generate ONCE; retain for this logical intent.
 intent = intent_from_proposal(
     state["purchase_proposal"],
     mandate=signed_mandate,
+    agent_id=agent_identity,
     reasoning_summary=state["reasoning_summary"],
     source_contexts=state["source_contexts"],
     idempotency_key=logical_intent_key,
+    dry_run=True,
 )
 guard = GuardClient(base_url="http://127.0.0.1:8080")
-# guard.request_payment(intent) raises SubmissionDisabledError locally; zero requests.
+# guard.request_payment(intent) raises SubmissionDisabledError; zero requests.
 ```
 
-`request_payment` accepts either a PaymentIntent or its keyword fields:
+`request_payment` accepts a PaymentIntent or its constructor keyword fields.
+Required fields are `mandate`, `agent_id`, `merchant_id`, `amount`, `currency`,
+nonempty `items`, `agent_reasoning`, and `idempotency_key`. Optional fields are
+`merchant_name`, `category` and `source_contexts`. `dry_run` defaults to True and
+only the exact boolean True is accepted. False, missing agent identity, invalid
+identity and identity/mandate mismatches are rejected locally. The identity must
+be nonempty, without surrounding whitespace or control characters. These are
+SDK safety requirements: Go currently permits omission of the caller identity.
+A matching caller-supplied string does not authenticate ownership of a mandate.
+
+### Explicit authentication and network opt-in
+
+The constructor accepts `base_url`, `payment_submission_enabled=False`,
+`gateway_token=None`, `timeout=10.0`, `max_response_bytes=1_000_000`, and optional
+`transport`. No environment variables are read automatically. Supplying a token
+alone does not enable network access. A network-enabled client requires an
+explicit nonempty gateway token; tokens must contain visible ASCII without
+whitespace or control characters to be safe in an HTTP header.
+
+For a separately reviewed local dry-run integration, the configuration shape is:
 
 ```python
-from agentguard_workstream_c.sdk import PaymentItem
-
-# This client remains disabled. Calling it fails locally, before transport access.
-# The keyword form, for a future reviewed caller, is:
-# guard.request_payment(
-#     mandate=signed_mandate, merchant_id="merchant_a", amount="29.99", currency="USD",
-#     items=(PaymentItem("USB-C hub", 1, "29.99"),),
-#     agent_reasoning="Selected an offer matching the task.",
-#     idempotency_key=logical_intent_key,
-# )
+# gateway_token comes explicitly from the caller's secret configuration.
+# Never store it in agent state, reasoning, source contexts or reports.
+guard = GuardClient(
+    base_url="http://127.0.0.1:8080",
+    gateway_token=gateway_token,
+    payment_submission_enabled=True,
+)
+# This opt-in permits dry-run requests only. No request is executed here.
 ```
 
-Constructor parameters are `base_url`, `payment_submission_enabled=False`,
-`timeout=10.0`, `max_response_bytes=1_000_000`, and optional `transport`.
-The only opt-in is explicit `payment_submission_enabled=True`; the SDK does not
-claim that setting this flag establishes a safe gateway. When enabled with the
-default transport, the request can authorize and capture money. Actual network
-submission has not been tested or approved in this implementation task.
-Tests use that opt-in only with injected fakes, never with actual payment transport.
+The SDK sends `Authorization: Bearer <gateway_token>`, accepted by the gateway
+handler. Go also accepts `X-Agent-Key`; this SDK uses Bearer exclusively. It
+sends `agent_id` and `dry_run: true` in the JSON body, without duplicate identity
+or mode headers. `X-Internal-Token` belongs only to gateway-to-intelligence calls
+and is never used by this SDK. PayPal, provider and intelligence credentials are
+never read. The SDK prints or logs no credentials and does not include them in
+intent or client representations.
 
-### Wire contract and preservation
+Despite the legacy flag name `payment_submission_enabled`, this interface has
+no live-payment mode. Use a dedicated gateway deployment with
+`GATEWAY_MODE=dryrun`, no PayPal credentials and isolated ledger storage. The
+client cannot prove a server's implementation is payment-incapable merely by
+sending a field or receiving an acknowledgment. No gateway has been contacted
+by this implementation's tests.
 
-The one endpoint is `POST /v1/payments/intents`. The body is flat:
+### Wire preservation and limits
 
-- Required: `mandate`, `merchant_id`, `amount`, `currency`, `items`,
-  `agent_reasoning`, `idempotency_key`.
-- Optional: `merchant_name`, `category`, `source_contexts`.
-- Items require `name`, integer `qty >= 1`, and `unit_price`; optional `category`.
-- SourceContexts retain their existing `ref`, `text`, `kind`, URL and HTML.
-  Optional values that are None are omitted rather than emitted as null.
+The endpoint remains `POST /v1/payments/intents`. Signed mandate JSON values are
+snapshotted without changing signatures, timestamps, array order, optional nulls
+or extensions. The SDK does not sign or cryptographically verify mandates.
+Issuer enrollment and signing interoperability remain gateway/team concerns.
 
-The signed mandate is structurally validated, snapshotted, and serialized with
-all supplied JSON values intact, including signature, public key, timestamp
-spelling, allowlist order, optional nulls, and extension fields. Caller mutation
-after intent construction cannot change that snapshot. The SDK does not add
-defaults, sort mandate arrays, normalize timestamps, sign, or cryptographically
-verify a mandate. It rejects non-JSON extension values rather than silently
-coercing them. Timestamps must be timezone-aware RFC3339; leap-second timestamps
-are not supported by the local datetime validator. Actual mandate authorization
-and signer trust remain gateway responsibilities.
+Money is supplied as a decimal string or Decimal and serialized as a string
+matching `^[0-9]+(\.[0-9]{1,2})?$`; floats, nonfinite values, rounding and silent
+quantization are disallowed. Currency is `^[A-Z]{3}$`. The caller's hyphenated
+UUID idempotency key is retained verbatim, including case. No UUID is generated
+or rotated by the SDK.
 
-Money accepts strings or Decimal and serializes as strings matching
-`^[0-9]+(\.[0-9]{1,2})?$`. Floats, NaN, infinity, signs, exponent-form strings,
-and excess fractional precision are rejected. Decimal values use fixed-point
-formatting; there is no rounding or silent quantization. Existing money-string
-spelling is retained. Zero is schema-valid, though the current gateway verifier
-rejects a zero requested amount. Currency must match `^[A-Z]{3}$` exactly.
-The SDK does not infer conversions or recalculate a caller's signed mandate.
+Items retain name, integer quantity, unit price and optional category. Merchant
+identity/name are retained. Internal product IDs and source-reference lists do
+not become invented gateway fields. SourceContexts retain `ref`, `kind`, `url`,
+actual consumed `text` and original `html`. Optional None values are omitted.
+Raw HTML, including hidden instructions and Unicode, is never normalized,
+sanitized or truncated.
 
-The external caller supplies a hyphenated UUID idempotency key. Its exact spelling
-is retained, including case; the SDK never generates or rotates it. The offline
-proposal adapter maps product name/quantity/unit price into an item. It does not
-invent top-level `product_id` or `source_references` fields in the gateway request.
-All supplied evidence is retained, including evidence beyond selected citations.
-The existing context count and text/HTML limits still apply on the client side;
-these limits are stricter than the gateway's currently unenforced schema limits.
+Limits are validated locally before transport:
 
-DecisionResponse exposes `payment_id`, `decision`, Decimal `risk_score`,
+- At most 50 source contexts.
+- Text: at most 200,000 UTF-8 bytes per context.
+- HTML: at most 1,000,000 UTF-8 bytes per context.
+- Reasoning: at most 50,000 characters, from the published downstream
+  `contracts/intel/judge_intent.request.schema.json` limit. This is not claimed
+  to be a separate Go handler check.
+- Complete compact serialized request body: at most 2,097,152 bytes (2 MiB),
+  including UTF-8 encoding, JSON escaping and all mandate/evidence fields.
+
+Python's shared SourceContext helper also retains its existing character limits;
+the SDK adds the stricter Go UTF-8 byte checks. Aggregate evidence may exceed the
+body limit even when every individual field is valid. Oversized requests fail
+locally without dropping evidence. No arbitrary size caps are invented for
+other individual fields; the complete body bound still applies.
+
+### Responses, errors and retries
+
+DecisionResponse retains `payment_id`, `decision`, Decimal `risk_score`,
 `reasons`, typed `checks`, optional `paypal`, optional `step_up_token`, and
-`audit_event_id`. Decisions are exactly `allow`, `step_up`, or `block`.
-Checks validate mandate `pass|fail` and injection/intent/risk
-`pass|flagged|unknown`. Approval URLs and available PayPal IDs are retained;
-`refund_id` is supported because it is also in the Go struct. Unknown response
-extension properties are ignored. A 200 `block` is a valid response. An `allow`
-decision or an approval URL is not interpreted as proof of completed capture.
+`audit_event_id`, and now represents `dry_run`. Decisions remain
+`allow|step_up|block`; checks retain their existing enums. PayPal IDs and approval
+URLs are preserved as response data, not proof that funds were captured.
 
-### Errors and idempotency limitations
+The standalone response parser distinguishes missing acknowledgment (None),
+False and True. The client accepts successful responses only with the exact JSON
+boolean `dry_run: true`, for all three decisions. Missing/false/malformed
+acknowledgments raise InvalidResponseError after one attempt, with unknown
+execution outcome and the unchanged idempotency key. The gateway stores
+`step_up_expires_at` in its payment projection, not DecisionResponse; no expiry
+field is invented here. This SDK does not perform approval or rejection calls.
 
-- `ValidationError`: malformed local request; no submission attempted.
-- `SubmissionDisabledError`: submission gate closed; no HTTP request.
-- `GatewayHTTPError`: status in `.status_code`, bounded plain-text diagnostic
-  in `.body_text`; its string representation does not dump the server body.
-- `IdempotencyConflictError`: HTTP 409; no original decision is available.
-- `GatewayConnectionError` / `GatewayTimeoutError`: execution outcome unknown.
-- `InvalidResponseError`: invalid UTF-8/JSON, duplicate JSON keys, missing/invalid
-  decision structure, nonfinite numbers, or incomplete response.
-- `ResponseTooLargeError`: response exceeds configured byte bound.
-- `RedirectRefusedError`: payment POST redirect not followed.
+HTTP failures retain their typed errors and bounded diagnostic body:
+GatewayHTTPError for non-200 responses, IdempotencyConflictError for 409, and
+RedirectRefusedError for redirects. Plain-text gateway errors need not contain
+an acknowledgment and are never parsed as successful dry-run decisions.
+Connection failures and timeouts remain GatewayConnectionError and
+GatewayTimeoutError. Malformed responses and acknowledgment failures are
+InvalidResponseError; oversized responses are ResponseTooLargeError. Local
+validation and a closed submission gate never invoke transport.
 
-Remote/transport errors expose the unchanged `.idempotency_key` and conservatively
-mark `.outcome_unknown=True`. Raw HTTP diagnostics may be sensitive and are not
-automatically logged. The SDK sends only JSON Content-Type and Accept headers;
-it has no authentication or custom credential-header parameters. It never reads
-PayPal, provider, or intelligence credentials from the environment.
+There are no automatic retries, redirect following, UUID rotation or live-mode
+fallbacks. Remote errors conservatively retain `outcome_unknown=True`. A timeout
+or rejected acknowledgment does not establish that no payment executed. A 409
+is not proof of success. Completed gateway decisions may be cached, but durable
+crash recovery and authenticated result ownership remain unresolved. Raw HTTP
+body diagnostics can be sensitive; callers must not log them indiscriminately.
 
-There are **no automatic retries**, including on 409, timeout, 500 or 502. A timeout
-or malformed response may follow partial or completed payment execution. The
-gateway currently returns a plain-text 409 for duplicates rather than replaying
-the original response. Do not rotate the key to work around a conflict, assume
-that an exception means no payment occurred, or infer that a 409 proves success.
-Result recovery/reconciliation must be defined by Vivek before live integration.
+Remaining gateway limitations include authenticated principal/agent binding,
+trusted enrollment, cross-language canonical signing differences, payer/order/
+payee verification, step-up and budget races, uncertain capture reconciliation,
+restart recovery, incomplete intelligence schema enforcement, and projection/
+event error handling. Dry-run spending does not increase live spending, but it
+also does not emulate an independent cumulative spending balance; event storage
+is shared and dry-run history can include live history. These limitations prevent
+claiming production/payment safety or genuine benchmark coverage for every case.
 
-Other unresolved gateway issues include caller and principal-key authentication,
-step-up token verification, payer approval/capture correctness, mandate-scoped
-risk history, intelligence response validation, body-size enforcement, durable
-idempotent result recovery, and ledger projection consistency. These are not
-repaired or bypassed by SDK client validation. Keep the shopping graph offline
-from payment submission until that integration is separately reviewed.
-
-### SDK tests
+### SDK validation
 
 ```powershell
 .\.venv\Scripts\python.exe -m pytest tests/test_gateway_sdk.py -v
-.\.venv\Scripts\python.exe -m pytest -q
+.\.venv\Scripts\python.exe -m pytest -v
 .\.venv\Scripts\python.exe -m pip check
 ```
 
-SDK tests use injected fake responses/openers only, with a socket guard that
-fails on any connection attempt. They cover serialization, mandate/HTML fidelity,
-null omission, money/currency/items, all decisions, error status bodies, timeouts,
-redirects, response validation/bounds, local gating, exact UUID retention and
-one-shot behavior. Full regressions separately use the existing ephemeral local
-merchant servers; no test calls the Go gateway or PayPal. Real gateway integration
-has not been verified.
+All SDK network behavior uses injected fake transports/openers. An autouse socket
+guard forbids and counts connection attempts. Tests cover authentication,
+identity, offline opt-in, dry-run-only requests and acknowledgment, signed
+mandate/HTML fidelity, byte/body boundaries, all decisions, HTTP errors,
+timeouts, redirect refusal, response bounds, unchanged UUIDs and one-shot calls.
+Full regression tests separately use ephemeral local merchant servers; none
+contact the gateway or PayPal.
 
 ## Windows sandbox editable-install workaround
 
@@ -719,16 +750,19 @@ surrogate LLM-only benchmark. No genuine ablation adapters or outcomes exist yet
 
 ### Integration blockers
 
-Vivek must publish and demonstrate a dedicated authenticated **dry-run endpoint
-that cannot create, authorize, capture, void, refund or otherwise move funds**.
-Its request, response, failure, timeout, idempotency and layer-attribution
-contracts must be reviewed before adding an adapter. The runner currently
-rejects non-synthetic adapters. Current gateway payment-security findings remain
-unresolved; do not use the SDK's submission option for benchmarking.
+Vivek's inspected gateway implements deployment-level dry-run using network-free
+payment operations. Our SDK now requires dry-run requests and acknowledgments,
+but no genuine benchmark adapter is implemented or enabled. The runner still
+rejects non-synthetic adapters. A future adapter requires a dedicated authenticated
+`GATEWAY_MODE=dryrun` deployment, isolated storage, test principal/merchant setup,
+executed gateway verification and explicit lifecycle mappings. Dry-run accounting
+does not establish live budget enforcement; unresolved gateway security issues
+still block payment-capable integration. Do not run real benchmark requests as
+part of SDK validation.
 
 A future genuine LLM-only adapter also needs an agreed provider/model, evidence
-presentation and reproducibility policy. Rikita must confirm dashboard/report
-consumption requirements. This local report version does not claim to be her
+presentation and reproducibility policy. Rikita has published a proposed dashboard summary format; its mapping and serving
+location still need agreement. This local report version does not claim to be her
 shared dashboard contract. Reports intentionally omit raw HTML, injected payloads,
 tasks and exception messages; retain sensitive evidence only through an agreed
 future evidence-storage design. Neither the agent nor runner should possess
