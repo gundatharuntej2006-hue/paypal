@@ -31,6 +31,10 @@ services:
         value: 3000
       - key: INTEL_API_TOKEN
         generateValue: true
+      - key: AGENT_AUTH_TOKEN
+        sync: false
+      - key: HUMAN_AUTH_TOKEN
+        sync: false
       - key: INTERNAL_LEDGER_TOKEN
         generateValue: true
       - key: RISK_THRESHOLD_BLOCK

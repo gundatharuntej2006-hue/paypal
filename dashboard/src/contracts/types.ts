@@ -14,6 +14,7 @@ export interface Mandate {
   expires_at: string;
   nonce: string;
   paypal_order_id: string;
+  public_key?: string;
   signature: string;
 }
 

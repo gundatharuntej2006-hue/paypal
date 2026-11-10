@@ -1,6 +1,6 @@
 import type { Mandate } from '../contracts/types';
 
-export type MandateDefinition = Omit<Mandate, 'mandate_id' | 'principal_id' | 'nonce' | 'paypal_order_id' | 'signature'>;
+export type MandateDefinition = Omit<Mandate, 'mandate_id' | 'principal_id' | 'nonce' | 'paypal_order_id' | 'public_key' | 'signature'>;
 export type MandateDraft = Omit<Mandate, 'paypal_order_id' | 'signature'>;
 
 const amounts = ['max_total', 'max_per_txn', 'step_up_over'] as const;
@@ -39,17 +39,39 @@ export function validateDefinition(definition: MandateDefinition): string[] {
   return errors;
 }
 
-/**
- * Assumed wire format pending gateway confirmation: remove the top-level
- * signature, sort the keys lexicographically, preserve array order, use
- * JSON.stringify escaping, and encode the compact JSON as UTF-8.
- * Mandate values are strings and string arrays.
- */
+// Match gateway/pkg/crypto.CanonicalMandateBytes. Go compares UTF-8
+// strings and escapes HTML-sensitive characters and Unicode separators.
+const encoder = new TextEncoder();
+function compareUtf8(first: string, second: string) {
+  const a = encoder.encode(first);
+  const b = encoder.encode(second);
+  for (let i = 0; i < Math.min(a.length, b.length); i++) {
+    if (a[i] !== b[i]) return a[i] - b[i];
+  }
+  return a.length - b.length;
+}
+
 export function canonicalize(mandate: Omit<Mandate, 'signature'> | Mandate): Uint8Array<ArrayBuffer> {
-  const fields = Object.entries(mandate)
-    .filter(([key]) => key !== 'signature')
-    .sort(([first], [second]) => first < second ? -1 : first > second ? 1 : 0);
-  return new TextEncoder().encode(JSON.stringify(Object.fromEntries(fields)));
+  const seconds = (value: string) => new Date(value).toISOString().replace(/\.\d{3}Z$/, 'Z');
+  const payload = {
+    agent_id: mandate.agent_id,
+    allowed_categories: mandate.allowed_categories?.length ? [...mandate.allowed_categories].sort(compareUtf8) : undefined,
+    allowed_merchants: mandate.allowed_merchants?.length ? [...mandate.allowed_merchants].sort(compareUtf8) : undefined,
+    currency: mandate.currency,
+    expires_at: seconds(mandate.expires_at),
+    mandate_id: mandate.mandate_id,
+    max_per_txn: mandate.max_per_txn,
+    max_total: mandate.max_total,
+    nonce: mandate.nonce,
+    paypal_order_id: mandate.paypal_order_id || undefined,
+    principal_id: mandate.principal_id,
+    public_key: mandate.public_key ?? '',
+    step_up_over: mandate.step_up_over || undefined,
+    task: mandate.task,
+    valid_from: seconds(mandate.valid_from),
+  };
+  return encoder.encode(JSON.stringify(payload).replace(/[<>&\u2028\u2029]/g,
+    (character) => '\\u' + character.charCodeAt(0).toString(16).padStart(4, '0')));
 }
 
 export const toBase64 = (bytes: ArrayBuffer) => btoa(String.fromCharCode(...new Uint8Array(bytes)));

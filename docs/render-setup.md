@@ -24,6 +24,7 @@ The [Render Blueprint setup guide](https://render.com/docs/infrastructure-as-cod
 | Gateway and intelligence | `PORT` | Render supplies the listening port, which defaults to `10000`. |
 | Intelligence | `ANTHROPIC_API_KEY` | Enter Atul's provider API key. |
 | Intel | `PAYPAL_WEBHOOK_ID` | Sandbox webhook registration ID for the intel service. |
+| Gateway | `AGENT_AUTH_TOKEN`, `HUMAN_AUTH_TOKEN` | Required by production startup. Set separate server-side secrets. |
 | Gateway and intel | `INTEL_API_TOKEN` | Generated on the gateway and shared with intel. |
 | Gateway and intel | `INTERNAL_LEDGER_TOKEN`, `LEDGER_TOKEN`, `LEDGER_URL` | Render shares the gateway hook token and internal address with intel. |
 | Dashboard | `VITE_GATEWAY_URL` | Render resolves this at build time from the gateway's public `RENDER_EXTERNAL_URL`. |

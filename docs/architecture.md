@@ -4,7 +4,7 @@ On `ritika`, the React dashboard, browser stub, shared JSON contracts, sandbox s
 
 ## Browser path
 
-- The mandate builder uses Web Crypto to generate a demo principal key, sign compact UTF-8 JSON with sorted top-level keys, and verify the Ed25519 signature before saving. The signature field is excluded from the signed bytes. The demo private key remains in local storage on that browser origin.
+- The mandate builder uses Web Crypto to generate a demo principal key, sign canonical UTF-8 JSON using the Go gateway format, including the public key, sorted allowlists, and UTC timestamps at second precision, and verify the Ed25519 signature before saving. The signature field is excluded from the signed bytes. The demo private key remains in local storage on that browser origin.
 - Stub mode stores mandates, payments, and reviews in memory. It simulates buyer consent and publishes prerecorded payment events through the same client interface used by the dashboard.
 - Live mode probes `/health` with bounded backoff, then subscribes to `/v1/events`. The ledger deduplicates by event ID and retains the newest 5,000 events. Payment Detail fetches the stored history in its supplied order and appends unique events from a payment-filtered stream.
 - The approvals inbox combines pending payment snapshots with the stream. After a user action it waits for a recorded `human.approved` or `human.rejected` event before showing a confirmed review.

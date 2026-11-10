@@ -92,7 +92,7 @@ export function MandateBuilder({ onSaved }: { onSaved: (mandate: Mandate) => voi
     try {
       const key = await getDemoPrincipal();
       setPrincipal(key);
-      setDraft({ ...definition, principal_id: key.id, mandate_id: 'mdt_' + crypto.randomUUID(), nonce: crypto.randomUUID() });
+      setDraft({ ...definition, principal_id: key.id, public_key: key.publicKey, mandate_id: 'mdt_' + crypto.randomUUID(), nonce: crypto.randomUUID() });
     } catch (error) {
       setErrors([error instanceof Error ? error.message : 'Could not generate the demo signing key.']);
     } finally {
