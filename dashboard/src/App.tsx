@@ -1,3 +1,4 @@
+import { useRecordingMode } from './demo/useRecordingMode';
 import { DemoBanner } from './demo/DemoPanel';
 import { HostedStartup } from './demo/HostedStartup';
 import { Approvals } from './approvals/Approvals';
@@ -139,5 +140,6 @@ function Workspace() {
 }
 
 export function App() {
+  useRecordingMode();
   return <HostedStartup><Workspace /></HostedStartup>;
 }
