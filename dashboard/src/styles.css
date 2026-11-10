@@ -71,19 +71,13 @@ th, td { border-top: 1px solid var(--border); }
 th { color: var(--muted); font-size: .8rem; }
 td { font-size: .9rem; }
 .activity { margin-top: 1rem; }
-.feed, .timeline, .benchmark { list-style: none; padding: 0; margin: .75rem 0 0; }
-.feed li, .benchmark li { display: flex; flex-wrap: wrap; align-items: center; gap: .7rem; padding: .6rem 0; border-top: 1px solid var(--border); font-size: .9rem; }
-.feed time { margin-left: auto; }
+.timeline { list-style: none; padding: 0; margin: .75rem 0 0; }
 .back { display: inline-block; margin-bottom: .75rem; }
 .timeline { display: grid; gap: .65rem; }
 .event-heading { display: flex; justify-content: space-between; flex-wrap: wrap; align-items: baseline; gap: .25rem 1rem; }
 .event-heading time { font-size: .85rem; }
 summary { cursor: pointer; color: var(--accent); }
 pre { overflow: auto; padding: .75rem; background: var(--background); border-radius: .5rem; }
-.metrics p { margin: 0 0 .35rem; }
-.metrics strong { font-size: 1.6rem; }
-.benchmark li > :first-child { flex: 1 1 8rem; }
-progress { accent-color: var(--accent); flex: 2 1 6rem; }
 @media (max-width: 760px) {
   .shell { display: block; }
   .sidebar { border-right: 0; border-bottom: 1px solid var(--border); padding: .85rem 1rem; }

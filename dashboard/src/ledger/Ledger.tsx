@@ -1,7 +1,7 @@
 import { useMemo, useRef, useState } from 'react';
 import type { RefObject } from 'react';
 import { Link } from 'react-router-dom';
-import { ClientSideRowModelModule, ModuleRegistry, TextFilterModule, NumberFilterModule, CellStyleModule, RowStyleModule, HighlightChangesModule, themeQuartz } from 'ag-grid-community';
+import { dashboardGridTheme } from '../grid';
 import type { ColDef } from 'ag-grid-community';
 import type { CustomCellRendererProps } from 'ag-grid-react';
 import { AgGridReact } from 'ag-grid-react';
@@ -9,25 +9,6 @@ import type { EventEnvelope } from '../contracts/types';
 import { decisionLabels, decisions, projectLedger } from './rows';
 import type { Layer, LedgerRow } from './rows';
 import './ledger.css';
-
-ModuleRegistry.registerModules([ClientSideRowModelModule, TextFilterModule, NumberFilterModule, CellStyleModule, RowStyleModule, HighlightChangesModule]);
-
-const theme = themeQuartz.withParams({
-  browserColorScheme: 'inherit',
-  accentColor: 'var(--accent)',
-  backgroundColor: 'var(--surface)',
-  foregroundColor: 'var(--text)',
-  borderColor: 'var(--border)',
-  headerBackgroundColor: 'var(--background)',
-  headerTextColor: 'var(--muted)',
-  rowHoverColor: 'var(--accent-bg)',
-  valueChangeValueHighlightBackgroundColor: 'var(--accent-bg)',
-  fontFamily: 'inherit',
-  fontSize: 14,
-  rowHeight: 45,
-  headerHeight: 46,
-  wrapperBorder: false,
-});
 
 const displayTime = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' });
 const money = (row: LedgerRow) => row.amount ? [row.currency, row.amount].filter(Boolean).join(' ') : '—';
@@ -104,7 +85,7 @@ function Grid({ rows, onInspect, empty, gridRef }: {
   rows: LedgerRow[]; onInspect: (id: string) => void; empty: string; gridRef: RefObject<AgGridReact<LedgerRow>>;
 }) {
   return <div className="ledger-grid">
-    <AgGridReact<LedgerRow> ref={gridRef} theme={theme} columnDefs={columns} defaultColDef={defaults} rowData={rows}
+    <AgGridReact<LedgerRow> ref={gridRef} theme={dashboardGridTheme} columnDefs={columns} defaultColDef={defaults} rowData={rows}
       getRowId={({ data }) => data.id}
       getRowClass={({ data }) => data && Date.now() - data.time < 1500 ? 'ledger-new-row' : undefined}
       onRowClicked={({ data }) => { if (data?.paymentId) onInspect(data.paymentId); }}

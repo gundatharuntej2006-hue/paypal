@@ -4,12 +4,14 @@ import { PaymentRoute } from './payments/PaymentDetail';
 import { Ledger } from './ledger/Ledger';
 import { appendEvent } from './ledger/rows';
 import { CopyButton, MandateBuilder } from './mandates/MandateBuilder';
-import { useEffect, useState } from 'react';
+import { lazy, Suspense, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
 import { Link, NavLink, Navigate, Route, Routes } from 'react-router-dom';
 import { client, useStub } from './api/client';
 
 import type { EventEnvelope } from './contracts/types';
+
+const Benchmark = lazy(() => import('./benchmark/Benchmark'));
 
 const pages = [
   { path: '/mandates', label: 'Mandates', icon: '◇' },
@@ -18,7 +20,6 @@ const pages = [
   { path: '/benchmark', label: 'Benchmark', icon: '▥' },
 ];
 
-const percent = (value: number) => new Intl.NumberFormat(undefined, { style: 'percent', maximumFractionDigits: 1 }).format(value);
 const amount = (value: string, currency: string) =>
   new Intl.NumberFormat(undefined, { style: 'currency', currency }).format(Number(value));
 const date = (value: string) => new Date(value).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' });
@@ -100,28 +101,6 @@ function Mandates() {
   </Page>;
 }
 
-function Benchmark() {
-  const state = useData(client.getBenchmarkReport);
-  return <Page label="Evaluation" title="Benchmark" description={useStub ? 'Illustrative results from the demo dataset.' : 'Attack coverage, false positives, and decision latency.'}>
-    <DataView state={state} empty="A benchmark report has not been published.">{(report) => report?.classes.length > 0 &&
-      <>
-        <div className="cards metrics">
-          <div className="panel card"><p>Full stack block rate</p><strong>{percent(report.full_stack_block_rate)}</strong></div>
-          <div className="panel card"><p>LLM-only block rate</p><strong>{percent(report.llm_only_block_rate)}</strong></div>
-          <div className="panel card"><p>False-positive rate</p><strong>{percent(report.false_positive_rate)}</strong></div>
-          <div className="panel card"><p>Median latency</p><strong>{report.median_latency_ms} ms</strong></div>
-        </div>
-        <section className="panel card activity"><h2>Blocked attacks by class</h2>
-          <ul className="benchmark">{report.classes.map((entry) => <li key={entry.name}>
-            <span>{entry.name}</span><progress aria-label={entry.name} max={entry.total || 1} value={entry.blocked} />
-            <span>{entry.blocked} / {entry.total}</span>
-          </li>)}</ul>
-        </section>
-      </>}
-    </DataView>
-  </Page>;
-}
-
 export function App() {
   const [connected, setConnected] = useState(false);
   const [ledgerEvents, setLedgerEvents] = useState<EventEnvelope[]>([]);
@@ -148,7 +127,7 @@ export function App() {
           <Route path="/ledger" element={<Ledger events={ledgerEvents} connected={connected} />} />
           <Route path="/approvals" element={<Approvals inbox={inbox} />} />
           <Route path="/payments/:id" element={<PaymentRoute />} />
-          <Route path="/benchmark" element={<Benchmark />} />
+          <Route path="/benchmark" element={<Suspense fallback={<p role="status">Loading benchmark…</p>}><Benchmark /></Suspense>} />
           <Route path="*" element={<Page label="AgentGuard" title="Page not found" description="This address does not match a dashboard page."><Link to="/ledger">Open Live Ledger</Link></Page>} />
         </Routes>
       </main>

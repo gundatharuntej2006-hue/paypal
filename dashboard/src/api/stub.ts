@@ -1,6 +1,6 @@
 import type { MandateDraft } from '../lib/mandate';
 import type { Decision, EventEnvelope, EventType, Mandate } from '../contracts/types';
-import type { ApprovalPayment, BenchmarkReport, Payment } from './models';
+import type { ApprovalPayment, Payment } from './models';
 
 const merchants = ['Northstar Office', 'Harbor Electronics', 'Pixel Supply'];
 const now = Date.now();
@@ -94,21 +94,6 @@ function review(id: string, type: 'human.approved' | 'human.rejected', detail?: 
   })), 400);
 }
 
-const benchmark: BenchmarkReport = {
-  classes: [
-    { name: 'Prompt injection', blocked: 15, total: 16 },
-    { name: 'Authority', blocked: 12, total: 12 },
-    { name: 'Budget evasion', blocked: 10, total: 11 },
-    { name: 'Merchant spoofing', blocked: 8, total: 8 },
-    { name: 'Intent drift', blocked: 7, total: 8 },
-    { name: 'Replay and retries', blocked: 7, total: 7 },
-  ],
-  false_positive_rate: 0.04,
-  median_latency_ms: 840,
-  full_stack_block_rate: 59 / 62,
-  llm_only_block_rate: 0.68,
-};
-
 export const stub = {
   async listMandates() { return [...mandates]; },
   async createMandate(mandate: Mandate) {
@@ -124,7 +109,6 @@ export const stub = {
   async listApprovals(): Promise<ApprovalPayment[]> { return payments.filter((item) => item.decision === 'step_up' && !reviewed.has(item.payment_id)); },
   async approve(id: string, orderId?: string) { review(id, 'human.approved', orderId); },
   async reject(id: string, reason?: string) { review(id, 'human.rejected', reason); },
-  async getBenchmarkReport() { return benchmark; },
   subscribeEvents(onEvent: (event: EventEnvelope) => void, paymentId?: string, onConnection?: (connected: boolean) => void) {
     const listener = (event: EventEnvelope) => {
       if (!paymentId || event.payment_id === paymentId) onEvent(event);

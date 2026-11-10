@@ -19,11 +19,3 @@ export interface ApprovalPayment extends Omit<Payment, 'risk_score' | 'checks' |
   approval_order_id?: string;
   approval_intent?: 'authorize' | 'capture';
 }
-
-export interface BenchmarkReport {
-  classes: { name: string; blocked: number; total: number }[];
-  false_positive_rate: number;
-  median_latency_ms: number;
-  full_stack_block_rate: number;
-  llm_only_block_rate: number;
-}

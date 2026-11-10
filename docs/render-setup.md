@@ -28,5 +28,8 @@ The [Render Blueprint setup guide](https://render.com/docs/infrastructure-as-cod
 | Intelligence | `LLM_API_KEY` | Enter Atul's provider API key. |
 | Dashboard | `VITE_GATEWAY_URL` | Render resolves this at build time from the gateway's public `RENDER_EXTERNAL_URL`. |
 | Dashboard | `VITE_PAYPAL_CLIENT_ID` | When the browser SDK is enabled, add the public sandbox client ID under **agentguard-dashboard > Environment**, then rebuild. |
+| Dashboard | `VITE_BENCHMARK_SOURCE` | Optional. Defaults to `auto`, which checks for a published static report before querying the configured gateway. Set `static` or `gateway` to use one source. |
+| Dashboard | `VITE_BENCHMARK_REPORT_URL` | Optional. Defaults to `/benchmark-report.json`. Copy a measured run to `dashboard/public/benchmark-report.json` before building to publish it at this URL. |
+
 
 Render prompts for `sync: false` values on initial creation. For later changes, open the relevant service's **Environment** tab. Vite exposes `VITE_` variables to the browser, so use that prefix only for public settings. See [Render environment variables](https://render.com/docs/environment-variables).

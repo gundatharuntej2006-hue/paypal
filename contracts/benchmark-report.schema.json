@@ -1,0 +1,230 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "AgentGuard benchmark report",
+  "description": "One run with attack-class aggregates and per-scenario results. Rates are fractions from 0 to 1 and durations are in milliseconds.",
+  "type": "object",
+  "required": [
+    "run_id",
+    "generated_at",
+    "totals",
+    "by_class",
+    "false_positive_rate",
+    "median_latency_ms",
+    "p95_latency_ms",
+    "catching_layer_counts",
+    "ablation",
+    "scenarios"
+  ],
+  "properties": {
+    "run_id": {
+      "type": "string",
+      "minLength": 1
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "totals": {
+      "type": "object",
+      "required": [
+        "attacks",
+        "benign"
+      ],
+      "properties": {
+        "attacks": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "benign": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "by_class": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "class",
+          "total",
+          "blocked",
+          "block_rate"
+        ],
+        "properties": {
+          "class": {
+            "type": "string",
+            "minLength": 1
+          },
+          "total": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "blocked": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "block_rate": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          }
+        }
+      }
+    },
+    "false_positive_rate": {
+      "type": "number",
+      "minimum": 0,
+      "maximum": 1
+    },
+    "median_latency_ms": {
+      "type": "number",
+      "minimum": 0
+    },
+    "p95_latency_ms": {
+      "type": "number",
+      "minimum": 0
+    },
+    "catching_layer_counts": {
+      "type": "object",
+      "required": [
+        "mandate",
+        "injection",
+        "intent",
+        "risk",
+        "other"
+      ],
+      "properties": {
+        "mandate": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "injection": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "intent": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "risk": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "other": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "ablation": {
+      "type": "object",
+      "required": [
+        "llm_only",
+        "full_stack"
+      ],
+      "properties": {
+        "llm_only": {
+          "type": "object",
+          "required": [
+            "block_rate",
+            "false_positive_rate"
+          ],
+          "properties": {
+            "block_rate": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "false_positive_rate": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          }
+        },
+        "full_stack": {
+          "type": "object",
+          "required": [
+            "block_rate",
+            "false_positive_rate"
+          ],
+          "properties": {
+            "block_rate": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            },
+            "false_positive_rate": {
+              "type": "number",
+              "minimum": 0,
+              "maximum": 1
+            }
+          }
+        }
+      }
+    },
+    "scenarios": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "class",
+          "label",
+          "expected",
+          "actual",
+          "layer",
+          "latency_ms"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "minLength": 1
+          },
+          "class": {
+            "type": "string",
+            "minLength": 1
+          },
+          "label": {
+            "type": "string",
+            "minLength": 1
+          },
+          "expected": {
+            "enum": [
+              "allow",
+              "step_up",
+              "block"
+            ]
+          },
+          "actual": {
+            "enum": [
+              "allow",
+              "step_up",
+              "block",
+              "error"
+            ]
+          },
+          "layer": {
+            "enum": [
+              "mandate",
+              "injection",
+              "intent",
+              "risk",
+              "other",
+              null
+            ]
+          },
+          "latency_ms": {
+            "type": "number",
+            "minimum": 0
+          }
+        }
+      }
+    },
+    "sample": {
+      "type": "boolean",
+      "description": "True only for illustrative results."
+    }
+  }
+}

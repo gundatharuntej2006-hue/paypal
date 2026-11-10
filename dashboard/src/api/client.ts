@@ -1,6 +1,7 @@
+import { loadBenchmarkReport } from '../benchmark/report';
 import type { MandateDraft } from '../lib/mandate';
 import type { EventEnvelope, Mandate } from '../contracts/types';
-import type { ApprovalPayment, BenchmarkReport, Payment } from './models';
+import type { ApprovalPayment, Payment } from './models';
 import { stub } from './stub';
 
 export const useStub = import.meta.env.VITE_USE_STUB !== 'false';
@@ -42,7 +43,6 @@ const live: typeof stub = {
   listApprovals: () => request<ApprovalPayment[]>('/approvals'),
   approve: (id, orderId) => review(id, 'approve', orderId),
   reject: (id, reason) => review(id, 'reject', reason),
-  getBenchmarkReport: () => request<BenchmarkReport>('/benchmark'),
   subscribeEvents(onEvent, paymentId, onConnection) {
     const query = paymentId ? '?' + new URLSearchParams({ payment_id: paymentId }) : '';
     // Keep the same EventSource across network failures so the browser
@@ -63,4 +63,15 @@ const live: typeof stub = {
   },
 };
 
-export const client = useStub ? stub : live;
+const benchmarkMode = import.meta.env.VITE_BENCHMARK_SOURCE;
+const benchmarkSource = benchmarkMode === 'static' || benchmarkMode === 'gateway' ? benchmarkMode : 'auto';
+
+export const client = {
+  ...(useStub ? stub : live),
+  getBenchmarkReport: () => loadBenchmarkReport({
+    source: benchmarkSource,
+    staticUrl: import.meta.env.VITE_BENCHMARK_REPORT_URL || '/benchmark-report.json',
+    gatewayUrl: benchmarkSource === 'gateway' || import.meta.env.VITE_GATEWAY_URL || !useStub ?
+      gateway + '/v1/benchmark/report' : undefined,
+  }),
+};
