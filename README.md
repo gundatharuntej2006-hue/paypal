@@ -137,6 +137,7 @@ Open the [local Benchmark dashboard](http://localhost:5173/benchmark) or inspect
 | Recharts | Displays class block rates, catching layers, and the ablation comparison. |
 | Render Blueprint | Defines the sandbox web services, managed Postgres, static dashboard, branch, health checks, and environment bindings. |
 | Vitest | Covers mandate validation and signatures, ledger event projection, and payment timeline order. |
+| Postman | Checks the proposed gateway routes, HTTP statuses, and response contracts against a local fixture. |
 
 The PayPal REST API inventory is pending a code audit because the gateway PayPal client is absent from this checkout. Live checkout has been exercised with a local fixture. <!-- VERIFY -->
 
@@ -192,6 +193,14 @@ npm.cmd run preview -- --host localhost --port 4173 --strictPort
 ```
 
 Open [http://localhost:4173](http://localhost:4173) for the production build. Run the [fresh-browser walkthrough](docs/deployment-checklist.md#fresh-browser-acceptance) to verify signing, streamed decisions, and the timeline.
+
+### Gateway contract checks with Postman
+
+Import the [collection](postman/AgentGuard.postman_collection.json) and [local environment](postman/AgentGuard.local.postman_environment.json) into Postman. Select **AgentGuard Local Sandbox**, set the gateway URL, and set the history payment ID to a known record. Start with **Read-only checks**. Open **Streaming (manual)** separately for SSE because the live stream can remain open.
+
+Enable sandbox writes explicitly and provide signed mandate and payment-intent JSON from your sandbox. Use separate pending payment IDs for approval and rejection. Provide the approved PayPal order ID for checkout-backed approval. The unsigned webhook request expects a rejection. Keep sandbox credentials and signed payloads out of shared exports.
+
+The collection targets the [proposed gateway contract](docs/api.md). It was tested against a local HTTP fixture. Live gateway verification is pending.
 
 ## Troubleshooting
 
