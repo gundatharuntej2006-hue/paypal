@@ -14,10 +14,12 @@ func SetupRouter(s *Server) http.Handler {
 	// Payment Intent Gateway (shopping agents)
 	mux.HandleFunc("POST /v1/payments/intents", s.handlePaymentIntent)
 
-	// Mandates (Rikita's dashboard)
+	// Mandates & Principals (Rikita's dashboard & authenticated enrollment)
 	mux.HandleFunc("GET /v1/mandates", s.handleListMandates)
 	mux.HandleFunc("POST /v1/mandates", s.handleCreateMandate)
 	mux.HandleFunc("POST /v1/mandates/{id}/order", s.handleCreateMandateOrder)
+	mux.HandleFunc("POST /v1/principals/keys", s.handleEnrollPrincipalKey)
+	mux.HandleFunc("POST /v1/principals", s.handleEnrollPrincipalKey)
 
 	// Human Step-up Approvals (Rikita's dashboard)
 	mux.HandleFunc("GET /v1/approvals", s.handleListApprovals)

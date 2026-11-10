@@ -245,8 +245,25 @@ type VerificationResult struct {
 	Reasons      []string `json:"reasons"`
 }
 
-// VerifyMandate runs all deterministic mandate rules against a payment intent.
+// VerifyMandate runs all deterministic mandate rules against a payment intent and consumes the nonce.
 func (v *Verifier) VerifyMandate(req *models.PaymentIntentRequest, now time.Time) (*VerificationResult, error) {
+	return v.verifyMandateInternal(req, now, true)
+}
+
+// VerifyMandateWithoutNonce runs all deterministic mandate rules without consuming the nonce.
+func (v *Verifier) VerifyMandateWithoutNonce(req *models.PaymentIntentRequest, now time.Time) (*VerificationResult, error) {
+	return v.verifyMandateInternal(req, now, false)
+}
+
+// ConsumeNonce consumes a nonce for a mandate in the nonce store.
+func (v *Verifier) ConsumeNonce(nonceKey, mandateID string) (bool, error) {
+	if v.nonceStore == nil {
+		return true, nil
+	}
+	return v.nonceStore.CheckAndConsume(nonceKey, mandateID)
+}
+
+func (v *Verifier) verifyMandateInternal(req *models.PaymentIntentRequest, now time.Time, consumeNonce bool) (*VerificationResult, error) {
 	m := &req.Mandate
 
 	// 1. Time validity window
@@ -280,13 +297,15 @@ func (v *Verifier) VerifyMandate(req *models.PaymentIntentRequest, now time.Time
 	}
 
 	// 4. Nonce replay protection (namespaced so dry-run never contaminates live nonces)
-	nonceKey := "live:" + m.Nonce
-	if req.DryRun {
-		nonceKey = "dryrun:" + m.Nonce
-	}
-	ok, err := v.nonceStore.CheckAndConsume(nonceKey, m.MandateID)
-	if err != nil || !ok {
-		return &VerificationResult{Valid: false, FailedReason: ErrNonceReplayed.Error()}, ErrNonceReplayed
+	if consumeNonce && v.nonceStore != nil {
+		nonceKey := "live:" + m.Nonce
+		if req.DryRun {
+			nonceKey = "dryrun:" + m.Nonce
+		}
+		ok, err := v.nonceStore.CheckAndConsume(nonceKey, m.MandateID)
+		if err != nil || !ok {
+			return &VerificationResult{Valid: false, FailedReason: ErrNonceReplayed.Error()}, ErrNonceReplayed
+		}
 	}
 
 	// 5. Agent identity binding

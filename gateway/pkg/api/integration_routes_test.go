@@ -3,6 +3,7 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -187,6 +188,9 @@ func TestIntegrationRoutes_PaymentsAndApprovals(t *testing.T) {
 	}
 
 	// Also test rejection on another payment
+	mandate2, _ := createTestMandate(t)
+	reg.RegisterPrincipal(mandate2.PrincipalID, mandate2.PublicKey)
+	intentReq.Mandate = mandate2
 	intentReq.IdempotencyKey = "idemp_test_stepup_2"
 	body2, _ := json.Marshal(intentReq)
 	req = httptest.NewRequest(http.MethodPost, "/v1/payments/intents", bytes.NewReader(body2))
@@ -672,6 +676,222 @@ func TestAuditIssue7_IdempotencyOwnershipIsolation(t *testing.T) {
 	// Must NOT be a cache hit for Agent A's decision!
 	if recB.Header().Get("X-Cache-Lookup") == "HIT" {
 		t.Fatalf("idempotency key must not be shared across different mandates/agents!")
+	}
+}
+
+func TestAuditIssue1_PrincipalKeyEnrollmentRoute(t *testing.T) {
+	srv, _, _, _ := setupTestServer(nil)
+	srv.cfg.HumanAuthToken = "secret_human_admin"
+	router := SetupRouter(srv)
+
+	pubBytes := make([]byte, 32)
+	for i := range pubBytes {
+		pubBytes[i] = byte(i + 1)
+	}
+	validKey := base64.StdEncoding.EncodeToString(pubBytes)
+
+	// 1. Missing auth token -> 401
+	payload := map[string]string{"principal_id": "usr_alice", "public_key": validKey}
+	b, _ := json.Marshal(payload)
+	req := httptest.NewRequest(http.MethodPost, "/v1/principals/keys", bytes.NewReader(b))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 unauthorized, got %d", rec.Code)
+	}
+
+	// 2. Valid enrollment -> 201 Created
+	req = httptest.NewRequest(http.MethodPost, "/v1/principals/keys", bytes.NewReader(b))
+	req.Header.Set("Authorization", "Bearer secret_human_admin")
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201 created, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// 3. Immutability: Attempt overwrite with different key -> 409 Conflict
+	diffBytes := make([]byte, 32)
+	diffBytes[0] = 99
+	diffKey := base64.StdEncoding.EncodeToString(diffBytes)
+	payloadDiff := map[string]string{"principal_id": "usr_alice", "public_key": diffKey}
+	bDiff, _ := json.Marshal(payloadDiff)
+	req = httptest.NewRequest(http.MethodPost, "/v1/principals/keys", bytes.NewReader(bDiff))
+	req.Header.Set("Authorization", "Bearer secret_human_admin")
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409 conflict on key overwrite, got %d", rec.Code)
+	}
+}
+
+func TestAuditIssue2_IdempotencyPayloadBindingAndConflict(t *testing.T) {
+	stubIntel := intelclient.NewStubIntelClient()
+	srv, _, _, reg := setupTestServer(stubIntel)
+	router := SetupRouter(srv)
+
+	mandate, _ := createTestMandate(t)
+	reg.RegisterPrincipal(mandate.PrincipalID, mandate.PublicKey)
+
+	intentReq := models.PaymentIntentRequest{
+		Mandate:        mandate,
+		AgentID:        mandate.AgentID,
+		MerchantID:     "merchant_a",
+		Amount:         "10.00",
+		Currency:       "USD",
+		Category:       "electronics",
+		Items:          []models.Item{{Name: "Item 1", Qty: 1, UnitPrice: "10.00"}},
+		IdempotencyKey: "idemp_test_payload_binding",
+		DryRun:         true,
+	}
+
+	// First execution -> 200 OK
+	b, _ := json.Marshal(intentReq)
+	req := httptest.NewRequest(http.MethodPost, "/v1/payments/intents", bytes.NewReader(b))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// Second execution with SAME payload -> 200 OK with X-Cache-Lookup: HIT
+	req = httptest.NewRequest(http.MethodPost, "/v1/payments/intents", bytes.NewReader(b))
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || rec.Header().Get("X-Cache-Lookup") != "HIT" {
+		t.Fatalf("expected 200 HIT, got %d (lookup: %s)", rec.Code, rec.Header().Get("X-Cache-Lookup"))
+	}
+
+	// Third execution with SAME key but DIFFERENT payload (Amount changed to 15.00) -> 409 Conflict!
+	intentReqModified := intentReq
+	intentReqModified.Amount = "15.00"
+	intentReqModified.Items = []models.Item{{Name: "Item 1", Qty: 1, UnitPrice: "15.00"}}
+	bMod, _ := json.Marshal(intentReqModified)
+	req = httptest.NewRequest(http.MethodPost, "/v1/payments/intents", bytes.NewReader(bMod))
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409 Conflict on payload tampering for same idempotency key, got %d: %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAuditIssue3_DryRunStepUpFailClosedCapExceeded(t *testing.T) {
+	stubIntel := intelclient.NewStubIntelClient()
+	stubIntel.RiskScoreVal = 0.45 // triggers step_up
+	srv, _, led, reg := setupTestServer(stubIntel)
+	router := SetupRouter(srv)
+
+	mandate, _ := createTestMandate(t)
+	mandate.MaxTotal = "50.00"
+	mandate.MaxPerTxn = "50.00"
+	reg.RegisterPrincipal(mandate.PrincipalID, mandate.PublicKey)
+
+	// Pre-consume $40 under dryrun budget
+	_ = led.ReserveBudget(context.Background(), "dryrun:"+mandate.MandateID, "pay_existing", 40.00, 50.00)
+	led.CommitBudgetReservation(context.Background(), "dryrun:"+mandate.MandateID, "pay_existing")
+
+	// Now try to request $20 (> remaining $10) with step-up
+	intentReq := models.PaymentIntentRequest{
+		Mandate:        mandate,
+		AgentID:        mandate.AgentID,
+		MerchantID:     "merchant_a",
+		Amount:         "20.00",
+		Currency:       "USD",
+		Category:       "electronics",
+		Items:          []models.Item{{Name: "Connector", Qty: 1, UnitPrice: "20.00"}},
+		IdempotencyKey: "idemp_stepup_fail_closed",
+		DryRun:         true,
+	}
+	b, _ := json.Marshal(intentReq)
+	req := httptest.NewRequest(http.MethodPost, "/v1/payments/intents", bytes.NewReader(b))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	var dec models.DecisionResponse
+	_ = json.NewDecoder(rec.Body).Decode(&dec)
+	if dec.Decision != models.DecisionBlock {
+		t.Fatalf("expected step-up to fail-closed to block when budget cap exceeded, got %s", dec.Decision)
+	}
+}
+
+func TestAuditIssue5_BenchmarkReportContractValidation(t *testing.T) {
+	srv, _, _, _ := setupTestServer(nil)
+	router := SetupRouter(srv)
+
+	// GET /v1/benchmark/report should find test vector and validate contract
+	req := httptest.NewRequest(http.MethodGet, "/v1/benchmark/report", nil)
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 from valid benchmark report, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var rep map[string]interface{}
+	if err := json.NewDecoder(rec.Body).Decode(&rep); err != nil {
+		t.Fatalf("expected valid JSON report: %v", err)
+	}
+	if rep["run_id"] == nil || rep["provenance"] == nil {
+		t.Fatalf("missing required contract fields in report")
+	}
+
+	// Test validation function directly on invalid payloads
+	if err := validateBenchmarkReport([]byte(`{"run_id": "test"}`)); err == nil {
+		t.Fatalf("expected error on missing provenance and classes")
+	}
+	if err := validateBenchmarkReport([]byte(`{"provenance": "invalid_val", "run_id": "r1"}`)); err == nil {
+		t.Fatalf("expected error on invalid provenance")
+	}
+}
+
+func TestAudit_ApprovalRejectionMutualExclusion(t *testing.T) {
+	stubIntel := intelclient.NewStubIntelClient()
+	stubIntel.RiskScoreVal = 0.45 // step up
+	srv, _, _, reg := setupTestServer(stubIntel)
+	router := SetupRouter(srv)
+
+	mandate, _ := createTestMandate(t)
+	reg.RegisterPrincipal(mandate.PrincipalID, mandate.PublicKey)
+
+	intentReq := models.PaymentIntentRequest{
+		Mandate:        mandate,
+		AgentID:        mandate.AgentID,
+		MerchantID:     "merchant_a",
+		Amount:         "30.00",
+		Currency:       "USD",
+		Category:       "electronics",
+		Items:          []models.Item{{Name: "Item", Qty: 1, UnitPrice: "30.00"}},
+		IdempotencyKey: "idemp_mutual_exclusion",
+		DryRun:         true,
+	}
+	b, _ := json.Marshal(intentReq)
+	req := httptest.NewRequest(http.MethodPost, "/v1/payments/intents", bytes.NewReader(b))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+
+	var dec models.DecisionResponse
+	_ = json.NewDecoder(rec.Body).Decode(&dec)
+
+	// 1. Reject payment
+	rejReq := httptest.NewRequest(http.MethodPost, "/v1/payments/"+dec.PaymentID+"/reject", bytes.NewReader([]byte(`{"reason":"declined"}`)))
+	rejRec := httptest.NewRecorder()
+	router.ServeHTTP(rejRec, rejReq)
+	if rejRec.Code != http.StatusOK {
+		t.Fatalf("expected 200 from reject, got %d", rejRec.Code)
+	}
+
+	// 2. Reject again is idempotent 200 OK
+	rejReq2 := httptest.NewRequest(http.MethodPost, "/v1/payments/"+dec.PaymentID+"/reject", bytes.NewReader([]byte(`{"reason":"declined"}`)))
+	rejRec2 := httptest.NewRecorder()
+	router.ServeHTTP(rejRec2, rejReq2)
+	if rejRec2.Code != http.StatusOK {
+		t.Fatalf("expected 200 idempotent from second reject, got %d", rejRec2.Code)
+	}
+
+	// 3. Attempting to approve a rejected payment MUST fail with 409 Conflict
+	appReq := httptest.NewRequest(http.MethodPost, "/v1/payments/"+dec.PaymentID+"/approve", bytes.NewReader([]byte(`{"paypal_order_id":"ORD_1"}`)))
+	appRec := httptest.NewRecorder()
+	router.ServeHTTP(appRec, appReq)
+	if appRec.Code != http.StatusConflict {
+		t.Fatalf("expected 409 conflict when approving an already rejected payment, got %d", appRec.Code)
 	}
 }
 

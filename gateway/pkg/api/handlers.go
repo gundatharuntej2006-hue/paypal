@@ -3,6 +3,9 @@ package api
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -189,26 +192,36 @@ func (s *Server) handlePaymentIntent(w http.ResponseWriter, r *http.Request) {
 	isDryRun := s.cfg.GatewayMode == "dryrun" || req.DryRun || r.Header.Get("X-Dry-Run") == "true" || r.URL.Query().Get("dry_run") == "true"
 	req.DryRun = isDryRun
 
+	// Principal & Mandate agent ownership binding:
+	if req.Mandate.AgentID != "" && req.AgentID != "" && req.AgentID != req.Mandate.AgentID {
+		failedReason := fmt.Sprintf("agent authorization failure: caller agent '%s' is not authorized by mandate agent '%s'", req.AgentID, req.Mandate.AgentID)
+		paymentID := "pay_failed_" + uuid.New().String()[:8]
+		_, _ = s.emit(ctx, "mandate.failed", &paymentID, &req.Mandate.MandateID, nil, "gateway", map[string]interface{}{
+			"reason": failedReason,
+		})
+		decision := models.DecisionResponse{
+			PaymentID: paymentID,
+			Decision:  models.DecisionBlock,
+			RiskScore: 1.0,
+			Reasons:   []string{failedReason},
+			Checks: models.ChecksResult{
+				Mandate:   "fail",
+				Injection: "unknown",
+				Intent:    "unknown",
+				Risk:      "unknown",
+			},
+			DryRun: isDryRun,
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(decision)
+		return
+	}
+
 	// Fix 5: Empty idempotency key rejection
 	idempKey := strings.TrimSpace(req.IdempotencyKey)
 	if idempKey == "" {
 		http.Error(w, "idempotency_key is required and cannot be empty", http.StatusBadRequest)
-		return
-	}
-
-	// Fix 3 & 4: Dedicated idempotency namespace bound to mandate & agent identity
-	modePrefix := "live:"
-	if isDryRun {
-		modePrefix = "dryrun:"
-	}
-	namespacedKey := fmt.Sprintf("%s%s:%s:%s", modePrefix, req.Mandate.MandateID, req.AgentID, idempKey)
-
-	// Fix 5: Reliable Idempotency Recovery - return original cached decision if seen
-	if cachedDec, err := s.ledger.GetDecisionByIdempotencyKey(ctx, namespacedKey); err == nil && cachedDec != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.Header().Set("X-Cache-Lookup", "HIT")
-		w.WriteHeader(http.StatusOK)
-		json.NewEncoder(w).Encode(cachedDec)
 		return
 	}
 
@@ -228,48 +241,21 @@ func (s *Server) handlePaymentIntent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	paymentID := "pay_" + uuid.New().String()[:8]
-	if err := s.stateMachine.Init(paymentID); err != nil {
-		http.Error(w, "failed to initialize payment state", http.StatusInternalServerError)
-		return
-	}
-
-	// 1. Record intent.received with dry_run flag in event data
-	intentEventKey := "intent:" + namespacedKey
-	intentEvt, err := s.emit(ctx, "intent.received", &paymentID, &req.Mandate.MandateID, &intentEventKey, "gateway", map[string]interface{}{
-		"merchant_id":     req.MerchantID,
-		"merchant_name":   req.MerchantName,
-		"amount":          req.Amount,
-		"currency":        req.Currency,
-		"items_count":     len(req.Items),
-		"agent_reasoning": req.AgentReasoning,
-		"contexts_count":  len(req.SourceContexts),
-		"dry_run":         isDryRun,
-	})
-	if err != nil {
-		if errors.Is(err, ledger.ErrDuplicateEvent) {
-			http.Error(w, "duplicate intent request in-flight", http.StatusConflict)
-			return
-		}
-		http.Error(w, fmt.Sprintf("ledger error: %v", err), http.StatusInternalServerError)
-		return
-	}
-
-	// 2. Deterministic Mandate Verification (includes Fix 2: principal key registry, Fix 8: formats, Fix 9: item reconciliation)
+	// 1. Deterministic Mandate Verification (verifies signature, key registry, expiry BEFORE cache lookup)
 	now := time.Now().UTC()
-	vRes, vErr := s.verifier.VerifyMandate(&req, now)
+	vRes, vErr := s.verifier.VerifyMandateWithoutNonce(&req, now)
 	if vErr != nil || !vRes.Valid {
-		_ = s.stateMachine.Transition(paymentID, statemachine.StateRejected)
 		failedReason := "mandate_invalid"
 		if vRes != nil && vRes.FailedReason != "" {
 			failedReason = vRes.FailedReason
 		}
 
+		paymentID := "pay_failed_" + uuid.New().String()[:8]
 		failEvt, _ := s.emit(ctx, "mandate.failed", &paymentID, &req.Mandate.MandateID, nil, "gateway", map[string]interface{}{
 			"reason": failedReason,
 		})
 
-		auditID := intentEvt.ID
+		auditID := ""
 		if failEvt != nil {
 			auditID = failEvt.ID
 		}
@@ -289,12 +275,101 @@ func (s *Server) handlePaymentIntent(w http.ResponseWriter, r *http.Request) {
 			DryRun:       isDryRun,
 		}
 
-		// Cache decision for idempotent retry recovery under namespaced key
-		_ = s.ledger.SaveDecisionIdempotency(ctx, namespacedKey, &decision)
-
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 		json.NewEncoder(w).Encode(decision)
+		return
+	}
+
+	// 2. Compute canonical request payload hash for idempotency binding
+	reqItemsBytes, _ := json.Marshal(req.Items)
+	reqHashPayload := fmt.Sprintf("%s|%s|%s|%s|%s|%s|%s|%s",
+		req.Mandate.MandateID,
+		req.AgentID,
+		req.MerchantID,
+		req.Amount,
+		req.Currency,
+		req.Category,
+		req.AgentReasoning,
+		string(reqItemsBytes),
+	)
+	reqHashBytes := sha256.Sum256([]byte(reqHashPayload))
+	currentReqHash := hex.EncodeToString(reqHashBytes[:])
+
+	// 3. Dedicated idempotency namespace bound to mandate & agent identity
+	modePrefix := "live:"
+	if isDryRun {
+		modePrefix = "dryrun:"
+	}
+	namespacedKey := fmt.Sprintf("%s%s:%s:%s", modePrefix, req.Mandate.MandateID, req.AgentID, idempKey)
+
+	// 4. Reliable Idempotency Recovery - return cached decision if payload matches, or 409 Conflict if payload changed
+	if cachedDec, cachedHash, err := s.ledger.GetDecisionRecordByIdempotencyKey(ctx, namespacedKey); err == nil && cachedDec != nil {
+		if cachedHash != "" && cachedHash != currentReqHash {
+			http.Error(w, "idempotency key conflict: request payload differs from previous request with this key", http.StatusConflict)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-Cache-Lookup", "HIT")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(cachedDec)
+		return
+	}
+
+	// 5. Fresh transaction: consume nonce to prevent replay attacks across different intents
+	nonceKey := "live:" + req.Mandate.Nonce
+	if isDryRun {
+		nonceKey = "dryrun:" + req.Mandate.Nonce
+	}
+	if ok, nErr := s.verifier.ConsumeNonce(nonceKey, req.Mandate.MandateID); nErr != nil || !ok {
+		failedReason := "mandate nonce already consumed: replay attack detected"
+		paymentID := "pay_failed_" + uuid.New().String()[:8]
+		_, _ = s.emit(ctx, "mandate.failed", &paymentID, &req.Mandate.MandateID, nil, "gateway", map[string]interface{}{
+			"reason": failedReason,
+		})
+		decision := models.DecisionResponse{
+			PaymentID: paymentID,
+			Decision:  models.DecisionBlock,
+			RiskScore: 1.0,
+			Reasons:   []string{failedReason},
+			Checks: models.ChecksResult{
+				Mandate:   "fail",
+				Injection: "unknown",
+				Intent:    "unknown",
+				Risk:      "unknown",
+			},
+			DryRun: isDryRun,
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(decision)
+		return
+	}
+
+	paymentID := "pay_" + uuid.New().String()[:8]
+	if err := s.stateMachine.Init(paymentID); err != nil {
+		http.Error(w, "failed to initialize payment state", http.StatusInternalServerError)
+		return
+	}
+
+	// 5. Record intent.received with dry_run flag in event data
+	intentEventKey := "intent:" + namespacedKey
+	_, err = s.emit(ctx, "intent.received", &paymentID, &req.Mandate.MandateID, &intentEventKey, "gateway", map[string]interface{}{
+		"merchant_id":     req.MerchantID,
+		"merchant_name":   req.MerchantName,
+		"amount":          req.Amount,
+		"currency":        req.Currency,
+		"items_count":     len(req.Items),
+		"agent_reasoning": req.AgentReasoning,
+		"contexts_count":  len(req.SourceContexts),
+		"dry_run":         isDryRun,
+	})
+	if err != nil {
+		if errors.Is(err, ledger.ErrDuplicateEvent) {
+			http.Error(w, "duplicate intent request in-flight", http.StatusConflict)
+			return
+		}
+		http.Error(w, fmt.Sprintf("ledger error: %v", err), http.StatusInternalServerError)
 		return
 	}
 
@@ -328,6 +403,17 @@ func (s *Server) handlePaymentIntent(w http.ResponseWriter, r *http.Request) {
 
 			var d map[string]interface{}
 			_ = json.Unmarshal(e.Data, &d)
+
+			// Exclude synthetic demo events and artifacts from genuine risk history
+			if e.Source == "synthetic_demo" {
+				continue
+			}
+			if isSynth, ok := d["is_synthetic"].(bool); ok && isSynth {
+				continue
+			}
+			if isDemo, ok := d["demo_mode"].(bool); ok && isDemo {
+				continue
+			}
 
 			// Exclude dry-run payments from live risk history to prevent pollution
 			if !isDryRun {
@@ -441,7 +527,7 @@ func (s *Server) handlePaymentIntent(w http.ResponseWriter, r *http.Request) {
 					_ = s.stateMachine.Transition(paymentID, statemachine.StateRejected)
 					decision.Decision = models.DecisionBlock
 					decision.Reasons = append(decision.Reasons, "concurrent_budget_cap_exceeded")
-					_ = s.ledger.SaveDecisionIdempotency(ctx, namespacedKey, &decision)
+					_ = s.ledger.SaveDecisionIdempotencyWithHash(ctx, namespacedKey, &decision, currentReqHash)
 					w.Header().Set("Content-Type", "application/json")
 					w.WriteHeader(http.StatusOK)
 					json.NewEncoder(w).Encode(decision)
@@ -498,10 +584,19 @@ func (s *Server) handlePaymentIntent(w http.ResponseWriter, r *http.Request) {
 			}
 
 		case models.DecisionStepUp:
-			_ = s.stateMachine.Transition(paymentID, statemachine.StateStepUpPending)
 			if maxTotalFloat > 0 {
-				_ = s.ledger.ReserveBudget(ctx, "dryrun:"+req.Mandate.MandateID, paymentID, reqAmtFloat, maxTotalFloat)
+				if err := s.ledger.ReserveBudget(ctx, "dryrun:"+req.Mandate.MandateID, paymentID, reqAmtFloat, maxTotalFloat); err != nil {
+					_ = s.stateMachine.Transition(paymentID, statemachine.StateRejected)
+					decision.Decision = models.DecisionBlock
+					decision.Reasons = append(decision.Reasons, "concurrent_budget_cap_exceeded")
+					_ = s.ledger.SaveDecisionIdempotencyWithHash(ctx, namespacedKey, &decision, currentReqHash)
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusOK)
+					json.NewEncoder(w).Encode(decision)
+					return
+				}
 			}
+			_ = s.stateMachine.Transition(paymentID, statemachine.StateStepUpPending)
 			stepUpToken := "stepup_dryrun_" + uuid.New().String()[:12]
 			expiresAt := time.Now().UTC().Add(15 * time.Minute)
 			decision.StepUpToken = stepUpToken
@@ -541,7 +636,7 @@ func (s *Server) handlePaymentIntent(w http.ResponseWriter, r *http.Request) {
 					_ = s.stateMachine.Transition(paymentID, statemachine.StateRejected)
 					decision.Decision = models.DecisionBlock
 					decision.Reasons = append(decision.Reasons, "concurrent_budget_cap_exceeded")
-					_ = s.ledger.SaveDecisionIdempotency(ctx, namespacedKey, &decision)
+					_ = s.ledger.SaveDecisionIdempotencyWithHash(ctx, namespacedKey, &decision, currentReqHash)
 					w.Header().Set("Content-Type", "application/json")
 					w.WriteHeader(http.StatusOK)
 					json.NewEncoder(w).Encode(decision)
@@ -613,6 +708,18 @@ func (s *Server) handlePaymentIntent(w http.ResponseWriter, r *http.Request) {
 			}
 
 		case models.DecisionStepUp:
+			if maxTotalFloat > 0 {
+				if err := s.ledger.ReserveBudget(ctx, req.Mandate.MandateID, paymentID, reqAmtFloat, maxTotalFloat); err != nil {
+					_ = s.stateMachine.Transition(paymentID, statemachine.StateRejected)
+					decision.Decision = models.DecisionBlock
+					decision.Reasons = append(decision.Reasons, "concurrent_budget_cap_exceeded")
+					_ = s.ledger.SaveDecisionIdempotencyWithHash(ctx, namespacedKey, &decision, currentReqHash)
+					w.Header().Set("Content-Type", "application/json")
+					w.WriteHeader(http.StatusOK)
+					json.NewEncoder(w).Encode(decision)
+					return
+				}
+			}
 			_ = s.stateMachine.Transition(paymentID, statemachine.StateStepUpPending)
 			stepUpToken := "stepup_" + uuid.New().String()[:12]
 			expiresAt := time.Now().UTC().Add(15 * time.Minute)
@@ -652,8 +759,8 @@ func (s *Server) handlePaymentIntent(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
-	// Fix 5: Cache the final decision under the namespaced idempotency key for safe replay
-	_ = s.ledger.SaveDecisionIdempotency(ctx, namespacedKey, &decision)
+	// Fix 5: Cache the final decision under the namespaced idempotency key with request hash for safe replay
+	_ = s.ledger.SaveDecisionIdempotencyWithHash(ctx, namespacedKey, &decision, currentReqHash)
 
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
@@ -696,6 +803,24 @@ func (s *Server) handleApprovePayment(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	state, err := s.stateMachine.Get(paymentID)
+	if err != nil {
+		http.Error(w, "payment not found", http.StatusNotFound)
+		return
+	}
+	if state == statemachine.StateCaptured {
+		http.Error(w, "conflict: payment has already been approved and captured", http.StatusConflict)
+		return
+	}
+	if state == statemachine.StateRejected || state == statemachine.StateVoided {
+		http.Error(w, fmt.Sprintf("conflict: payment %s is in terminal state '%s' and cannot be approved", paymentID, state), http.StatusConflict)
+		return
+	}
+	if state != statemachine.StateStepUpPending && state != statemachine.StateAuthorized {
+		http.Error(w, fmt.Sprintf("payment cannot be approved in state '%s' (must be 'step_up_pending')", state), http.StatusConflict)
+		return
+	}
+
 	// Point 2: ATOMIC token consumption before executing approval (prevents TOCTOU concurrency race)
 	if err := s.ledger.ConsumeStepUpToken(ctx, paymentID, sentToken); err != nil {
 		if errors.Is(err, ledger.ErrTokenAlreadyConsumed) {
@@ -711,12 +836,6 @@ func (s *Server) handleApprovePayment(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		http.Error(w, fmt.Sprintf("token verification error: %v", err), http.StatusBadRequest)
-		return
-	}
-
-	state, err := s.stateMachine.Get(paymentID)
-	if err != nil || state != statemachine.StateStepUpPending {
-		http.Error(w, fmt.Sprintf("payment cannot be approved in state '%s' (must be 'step_up_pending')", state), http.StatusConflict)
 		return
 	}
 
@@ -806,6 +925,15 @@ func (s *Server) handleApprovePayment(w http.ResponseWriter, r *http.Request) {
 	// Fix 4: CRITICAL - Only report approved if CaptureAuthorization actually succeeds with status COMPLETED!
 	capResp, capErr := s.paypalClient.CaptureAuthorization(ctx, authID, proj.Amount, proj.Currency, true, "cap_stepup:"+paymentID)
 	if capErr != nil || capResp == nil || capResp.Status != "COMPLETED" {
+		// Ambiguous capture recovery attempt: retry once with identical request id
+		time.Sleep(100 * time.Millisecond)
+		retryResp, retryErr := s.paypalClient.CaptureAuthorization(ctx, authID, proj.Amount, proj.Currency, true, "cap_stepup:"+paymentID)
+		if retryErr == nil && retryResp != nil && retryResp.Status == "COMPLETED" {
+			capResp = retryResp
+			capErr = nil
+		}
+	}
+	if capErr != nil || capResp == nil || capResp.Status != "COMPLETED" {
 		s.ledger.ReleaseBudgetReservation(ctx, proj.MandateID, paymentID)
 		log.Printf("[gateway] step-up capture failed: %v, resp: %+v", capErr, capResp)
 		_ = s.stateMachine.Transition(paymentID, statemachine.StateRejected)
@@ -860,6 +988,31 @@ func (s *Server) handleRejectPayment(w http.ResponseWriter, r *http.Request) {
 	var rejectReq models.StepUpRejectRequest
 	if r.Body != nil {
 		_ = json.NewDecoder(r.Body).Decode(&rejectReq)
+	}
+
+	state, err := s.stateMachine.Get(paymentID)
+	if err != nil {
+		http.Error(w, "payment not found", http.StatusNotFound)
+		return
+	}
+	if state == statemachine.StateRejected {
+		// Idempotent rejection return
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(map[string]interface{}{
+			"payment_id": paymentID,
+			"status":     "rejected",
+			"decision":   "block",
+			"idempotent": true,
+		})
+		return
+	}
+	if state == statemachine.StateCaptured {
+		http.Error(w, fmt.Sprintf("conflict: payment %s is already captured and cannot be rejected", paymentID), http.StatusConflict)
+		return
+	}
+	if state != statemachine.StateStepUpPending && state != statemachine.StateAuthorized {
+		http.Error(w, fmt.Sprintf("payment cannot be rejected in state '%s' (must be 'step_up_pending')", state), http.StatusConflict)
+		return
 	}
 
 	proj, err := s.ledger.GetPaymentProjection(ctx, paymentID)
@@ -1180,6 +1333,62 @@ func (s *Server) handleCreateMandate(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusCreated)
 	json.NewEncoder(w).Encode(m)
+}
+
+// handleEnrollPrincipalKey handles POST /v1/principals/keys and POST /v1/principals
+func (s *Server) handleEnrollPrincipalKey(w http.ResponseWriter, r *http.Request) {
+	// Caller Authentication: require human auth token
+	if s.cfg.HumanAuthToken != "" {
+		authHeader := r.Header.Get("Authorization")
+		if authHeader != "Bearer "+s.cfg.HumanAuthToken {
+			http.Error(w, "unauthorized human administrator: invalid token for principal enrollment", http.StatusUnauthorized)
+			return
+		}
+	} else if s.cfg.Env == "production" {
+		http.Error(w, "unauthorized: human authentication token required in production", http.StatusUnauthorized)
+		return
+	}
+
+	var req struct {
+		PrincipalID string `json:"principal_id"`
+		PublicKey   string `json:"public_key"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		http.Error(w, fmt.Sprintf("invalid json payload: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	principalID := strings.TrimSpace(req.PrincipalID)
+	publicKey := strings.TrimSpace(req.PublicKey)
+	if principalID == "" || publicKey == "" {
+		http.Error(w, "principal_id and public_key are required", http.StatusBadRequest)
+		return
+	}
+
+	// Validate Ed25519 key length
+	rawKey, err := base64.StdEncoding.DecodeString(publicKey)
+	if err != nil || len(rawKey) != 32 {
+		http.Error(w, "invalid public_key: must be 32-byte standard base64 Ed25519 public key", http.StatusBadRequest)
+		return
+	}
+
+	// Key immutability check
+	if existingKey, err := s.verifier.GetPrincipalPublicKey(principalID); err == nil && existingKey != "" {
+		if existingKey != publicKey {
+			http.Error(w, fmt.Sprintf("conflict: principal '%s' is already registered with a different public key", principalID), http.StatusConflict)
+			return
+		}
+	}
+
+	s.verifier.RegisterPrincipal(principalID, publicKey)
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(map[string]interface{}{
+		"principal_id": principalID,
+		"public_key":   publicKey,
+		"status":       "enrolled",
+	})
 }
 
 // handleCreateMandateOrder handles POST /v1/mandates/{id}/order for Rikita's dashboard.
@@ -1567,9 +1776,8 @@ func (s *Server) handleGetBenchmarkReport(w http.ResponseWriter, r *http.Request
 		if err != nil {
 			continue
 		}
-		data = bytes.TrimPrefix(data, []byte("\xef\xbb\xbf"))
-		var parsed map[string]interface{}
-		if jsonErr := json.Unmarshal(data, &parsed); jsonErr == nil && parsed["run_id"] != nil {
+		if err := validateBenchmarkReport(data); err == nil {
+			data = bytes.TrimPrefix(data, []byte("\xef\xbb\xbf"))
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
 			w.Write(data)
@@ -1579,4 +1787,58 @@ func (s *Server) handleGetBenchmarkReport(w http.ResponseWriter, r *http.Request
 
 	// Strictly return 404 when no genuine operator-published report exists (no fabricated metrics)
 	http.Error(w, `{"error": "no operator-published benchmark report found"}`, http.StatusNotFound)
+}
+
+func validateBenchmarkReport(data []byte) error {
+	// Enforce 5MB size limit
+	if len(data) > 5*1024*1024 {
+		return errors.New("report exceeds 5MB size limit")
+	}
+
+	data = bytes.TrimPrefix(data, []byte("\xef\xbb\xbf"))
+	var parsed map[string]interface{}
+	if err := json.Unmarshal(data, &parsed); err != nil {
+		return fmt.Errorf("invalid json: %w", err)
+	}
+
+	// Validate provenance
+	prov, ok := parsed["provenance"].(string)
+	if !ok || (prov != "genuine" && prov != "synthetic" && prov != "unexecuted") {
+		return errors.New("invalid or missing provenance: must be 'genuine', 'synthetic', or 'unexecuted'")
+	}
+
+	// Validate run_id
+	runID, ok := parsed["run_id"].(string)
+	if !ok || strings.TrimSpace(runID) == "" {
+		return errors.New("missing run_id")
+	}
+
+	// Validate generated_at
+	genAt, ok := parsed["generated_at"].(string)
+	if !ok || strings.TrimSpace(genAt) == "" {
+		return errors.New("missing generated_at")
+	}
+
+	// Validate classes or by_class
+	classes, ok := parsed["classes"].([]interface{})
+	if !ok {
+		classes, ok = parsed["by_class"].([]interface{})
+	}
+	if !ok || len(classes) == 0 {
+		return errors.New("missing classes or by_class array")
+	}
+
+	// Validate ablation
+	if parsed["ablation"] == nil {
+		return errors.New("missing ablation object")
+	}
+
+	// Validate report_version if present
+	if rv, exists := parsed["report_version"]; exists {
+		if rvFloat, ok := rv.(float64); !ok || int(rvFloat) != 1 {
+			return errors.New("unsupported report_version: expected 1")
+		}
+	}
+
+	return nil
 }
