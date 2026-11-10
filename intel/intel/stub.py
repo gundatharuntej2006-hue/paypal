@@ -34,20 +34,29 @@ _INJECTION_PHRASES = (
     "[system]",
     "new instructions:",
 )
-_INFLUENCE_PHRASES = ("the page said", "the page told", "instructed me", "was told to", "the review said to")
+_INFLUENCE_PHRASES = (
+    "the page said",
+    "the page told",
+    "instructed me",
+    "was told to",
+    "told me to",
+    "the review said to",
+)
 
 
 async def scan(req: ScanRequest) -> ScanResponse:
     if not req.contexts:
         return ScanResponse.unknown("no_contexts", version=VERSION)
     for ctx in req.contexts:
-        low = ctx.text.lower()
+        # The raw HTML counts too: hidden-text attacks only show up there.
+        content = ctx.text if not ctx.html else f"{ctx.text}\n{ctx.html}"
+        low = content.lower()
         if FORCE_UNKNOWN in low:
             return ScanResponse.unknown("forced_unknown", version=VERSION)
         for phrase in _INJECTION_PHRASES:
             at = low.find(phrase)
             if at >= 0:
-                snippet = Snippet(ref=ctx.ref, text=ctx.text[max(0, at - 40) : at + 160], rule=f"stub:{phrase}")
+                snippet = Snippet(ref=ctx.ref, text=content[max(0, at - 40) : at + 160], rule=f"stub:{phrase}")
                 return ScanResponse(
                     verdict="injection", confidence=0.95, snippets=[snippet], stage="heuristic", version=VERSION
                 )

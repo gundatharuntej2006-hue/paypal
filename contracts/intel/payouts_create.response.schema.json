@@ -1,0 +1,45 @@
+{
+  "additionalProperties": false,
+  "properties": {
+    "payment_id": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "title": "Payment Id"
+    },
+    "batch_id": {
+      "title": "Batch Id",
+      "type": "string"
+    },
+    "batch_status": {
+      "description": "PayPal batch status: PENDING, PROCESSING, SUCCESS, DENIED, CANCELED.",
+      "title": "Batch Status",
+      "type": "string"
+    },
+    "item_status": {
+      "anyOf": [
+        {
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "description": "PayPal item status, e.g. UNCLAIMED, SUCCESS, FAILED.",
+      "title": "Item Status"
+    }
+  },
+  "required": [
+    "payment_id",
+    "batch_id",
+    "batch_status"
+  ],
+  "title": "PayoutResponse",
+  "type": "object"
+}

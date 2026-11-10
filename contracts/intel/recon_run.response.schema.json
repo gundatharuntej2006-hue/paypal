@@ -1,0 +1,158 @@
+{
+  "$defs": {
+    "Issue": {
+      "additionalProperties": false,
+      "properties": {
+        "field": {
+          "enum": [
+            "exists",
+            "amount",
+            "currency",
+            "status",
+            "payment_id"
+          ],
+          "title": "Field",
+          "type": "string"
+        },
+        "ledger": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Ledger"
+        },
+        "paypal": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Paypal"
+        }
+      },
+      "required": [
+        "field",
+        "ledger",
+        "paypal"
+      ],
+      "title": "Issue",
+      "type": "object"
+    },
+    "ReconResult": {
+      "additionalProperties": false,
+      "properties": {
+        "payment_id": {
+          "title": "Payment Id",
+          "type": "string"
+        },
+        "capture_id": {
+          "title": "Capture Id",
+          "type": "string"
+        },
+        "result": {
+          "enum": [
+            "ok",
+            "mismatch",
+            "unknown"
+          ],
+          "title": "Result",
+          "type": "string"
+        },
+        "source": {
+          "enum": [
+            "transaction_search",
+            "captures_api",
+            "none"
+          ],
+          "title": "Source",
+          "type": "string"
+        },
+        "issues": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/Issue"
+          },
+          "title": "Issues",
+          "type": "array"
+        },
+        "reason": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Reason"
+        }
+      },
+      "required": [
+        "payment_id",
+        "capture_id",
+        "result",
+        "source"
+      ],
+      "title": "ReconResult",
+      "type": "object"
+    }
+  },
+  "additionalProperties": false,
+  "properties": {
+    "run_id": {
+      "title": "Run Id",
+      "type": "string"
+    },
+    "version": {
+      "title": "Version",
+      "type": "string"
+    },
+    "checked": {
+      "title": "Checked",
+      "type": "integer"
+    },
+    "ok": {
+      "title": "Ok",
+      "type": "integer"
+    },
+    "mismatched": {
+      "title": "Mismatched",
+      "type": "integer"
+    },
+    "unknown": {
+      "title": "Unknown",
+      "type": "integer"
+    },
+    "search_available": {
+      "title": "Search Available",
+      "type": "boolean"
+    },
+    "results": {
+      "items": {
+        "$ref": "#/$defs/ReconResult"
+      },
+      "title": "Results",
+      "type": "array"
+    }
+  },
+  "required": [
+    "run_id",
+    "version",
+    "checked",
+    "ok",
+    "mismatched",
+    "unknown",
+    "search_available",
+    "results"
+  ],
+  "title": "ReconResponse",
+  "type": "object"
+}

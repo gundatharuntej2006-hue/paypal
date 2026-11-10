@@ -25,6 +25,8 @@ class Settings:
     # Ledger hook on the gateway (events from webhooks go there)
     ledger_url: str | None = None
     ledger_token: str | None = None
+    # Gateway base URL, used by reconciliation to read the ledger (defaults to LEDGER_URL's host)
+    gateway_url: str | None = None
 
 
 def _choice(name: str, default: str, allowed: tuple[str, ...]) -> str:
@@ -44,9 +46,19 @@ def _ledger_url(value: str | None) -> str | None:
     return value if "://" in value else f"http://{value.strip('/')}{LEDGER_PATH}"
 
 
+def _gateway_url(value: str | None, ledger_url: str | None) -> str | None:
+    if value:
+        value = value.strip().rstrip("/")
+        return value if "://" in value else f"http://{value}"
+    if ledger_url and ledger_url.endswith(LEDGER_PATH):
+        return ledger_url[: -len(LEDGER_PATH)]
+    return None
+
+
 @lru_cache
 def get_settings() -> Settings:
     env = os.environ.get
+    ledger_url = _ledger_url(env("LEDGER_URL"))
     return Settings(
         mode=_choice("INTEL_MODE", "live", ("live", "stub")),  # type: ignore[arg-type]
         api_token=env("INTEL_API_TOKEN") or None,
@@ -59,6 +71,7 @@ def get_settings() -> Settings:
         paypal_client_secret=env("PAYPAL_CLIENT_SECRET") or None,
         paypal_webhook_id=env("PAYPAL_WEBHOOK_ID") or None,
         webhook_verify=_choice("PAYPAL_WEBHOOK_VERIFY", "postback", ("postback", "local")),  # type: ignore[arg-type]
-        ledger_url=_ledger_url(env("LEDGER_URL")),
+        ledger_url=ledger_url,
         ledger_token=env("LEDGER_TOKEN") or None,
+        gateway_url=_gateway_url(env("GATEWAY_URL"), ledger_url),
     )
