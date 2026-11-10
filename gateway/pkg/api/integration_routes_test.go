@@ -212,6 +212,21 @@ func TestIntegrationRoutes_PaymentsAndApprovals(t *testing.T) {
 	if p2 == nil {
 		t.Fatalf("expected projection for payment 2")
 	}
+
+	// 4. Verify GET /v1/payments/:id/events returns events array
+	req = httptest.NewRequest(http.MethodGet, "/v1/payments/"+decResp2.PaymentID+"/events", nil)
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 from GET /v1/payments/:id/events, got %d", rec.Code)
+	}
+	var pEvents []models.LedgerEvent
+	if err := json.NewDecoder(rec.Body).Decode(&pEvents); err != nil {
+		t.Fatalf("failed to decode payment events: %v", err)
+	}
+	if len(pEvents) == 0 {
+		t.Fatalf("expected at least 1 event for payment %s", decResp2.PaymentID)
+	}
 }
 
 func TestIntegrationRoutes_DemoRunAndBenchmark(t *testing.T) {

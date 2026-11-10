@@ -27,6 +27,7 @@ func SetupRouter(s *Server) http.Handler {
 	// Payments listing, details & timeline
 	mux.HandleFunc("GET /v1/payments", s.handleListPayments)
 	mux.HandleFunc("GET /v1/payments/{id}", s.handleGetPayment)
+	mux.HandleFunc("GET /v1/payments/{id}/events", s.handleGetPaymentEvents)
 
 	// Demo scenarios runner (happy_path, poisoned_page, budget_splitting)
 	mux.HandleFunc("POST /v1/demo/run", s.handleRunDemoScenario)
@@ -51,7 +52,7 @@ func withCORS(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Internal-Token, X-Step-Up-Token, X-Agent-Key, PayPal-Request-Id")
+		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, X-Internal-Token, X-Step-Up-Token, X-Agent-Key, PayPal-Request-Id, Last-Event-ID")
 
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)

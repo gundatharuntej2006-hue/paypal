@@ -1096,6 +1096,27 @@ func (s *Server) handleGetPayment(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+// handleGetPaymentEvents handles GET /v1/payments/{id}/events
+func (s *Server) handleGetPaymentEvents(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	paymentID := r.PathValue("id")
+	if paymentID == "" {
+		http.Error(w, "missing payment id", http.StatusBadRequest)
+		return
+	}
+
+	eventsList, err := s.ledger.GetEventsByPayment(ctx, paymentID)
+	if err != nil {
+		eventsList = []models.LedgerEvent{}
+	}
+	if eventsList == nil {
+		eventsList = []models.LedgerEvent{}
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(eventsList)
+}
+
 // handleListMandates handles GET /v1/mandates for Rikita's dashboard.
 func (s *Server) handleListMandates(w http.ResponseWriter, r *http.Request) {
 	s.mu.RLock()
