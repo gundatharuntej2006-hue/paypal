@@ -93,7 +93,8 @@ function Grid({ rows, onInspect, empty, gridRef }: {
       onCellKeyDown={({ event, data }) => {
         if (event instanceof KeyboardEvent && event.key === 'Enter' && data?.paymentId) onInspect(data.paymentId);
       }}
-      overlayNoRowsTemplate={empty} />
+      suppressOverlays={['noRows']} />
+    {rows.length === 0 && <p className="ledger-empty" role="status">{empty}</p>}
   </div>;
 }
 

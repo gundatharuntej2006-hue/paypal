@@ -163,7 +163,7 @@ Copy [dashboard/.env.example](dashboard/.env.example) to `dashboard/.env.local` 
 | Dashboard variable | Default or purpose |
 | --- | --- |
 | `VITE_USE_STUB` | `true` by default. Set `false` for the live client. |
-| `VITE_GATEWAY_URL` | `http://localhost:8080`. Gateway origin for health, API, and events. |
+| `VITE_GATEWAY_URL` | Gateway origin for health, API, and events. Leave blank in standalone stub mode. The live client defaults to `http://localhost:8080`. |
 | `VITE_PAYPAL_CLIENT_ID` | Public PayPal sandbox client ID for browser checkout. |
 | `VITE_DEMO_MODE` | Set `true` to show the sandbox scenario controls in live mode. Stub mode always shows them. |
 | `VITE_DEMO_RUN_URL` | Optional override. Defaults to the gateway URL plus `/v1/demo/run`. |
@@ -187,6 +187,7 @@ From `dashboard/` after `npm.cmd ci`:
 
 ```powershell
 npm.cmd run typecheck
+npm.cmd run lint
 npm.cmd test
 npm.cmd run build
 npm.cmd run preview -- --host localhost --port 4173 --strictPort
