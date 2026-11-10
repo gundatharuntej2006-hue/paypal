@@ -139,9 +139,11 @@ export function validateReport(value: unknown): BenchmarkReport {
     if (Object.hasOwn(counts, layer) && provenance !== 'unexecuted') layerCounts[layer] = metric(counts[layer], count, layer);
   }
 
-  const latencySamples = metric(report.latency_sample_count, count, 'latency_sample_count');
-  const median = metric(report.median_latency_ms, duration, 'median_latency_ms');
-  const p95 = metric(report.p95_latency_ms, duration, 'p95_latency_ms');
+  const fullStackData = record(ablation.full_stack);
+  const latencyValue = (key: string) => Object.hasOwn(fullStackData, key) ? fullStackData[key] : report[key];
+  const latencySamples = metric(latencyValue('latency_sample_count'), count, 'latency_sample_count');
+  const median = metric(latencyValue('median_latency_ms'), duration, 'median_latency_ms');
+  const p95 = metric(latencyValue('p95_latency_ms'), duration, 'p95_latency_ms');
   return {
     provenance,
     run_id: runId ?? undefined,

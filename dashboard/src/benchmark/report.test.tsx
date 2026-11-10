@@ -1,5 +1,8 @@
 import { renderToStaticMarkup } from 'react-dom/server';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import genuine from './fixtures/genuine_partial_coverage.json';
+import synthetic from './fixtures/synthetic.json';
+import unexecuted from './fixtures/unexecuted.json';
 import { Results } from './Benchmark';
 import { loadBenchmarkReport, validateReport } from './report';
 
@@ -23,6 +26,28 @@ const fixture = {
 afterEach(() => vi.unstubAllGlobals());
 
 describe('benchmark adapter summaries', () => {
+  it.each([
+    [genuine, 'Genuine measurements', 20, 30, 2, 57],
+    [synthetic, 'Synthetic test-double results', 40, 70, 7, 55],
+    [unexecuted, 'Unexecuted validation report', null, null, 0, 60],
+  ] as const)('loads handoff fixture %#', async (fixture, label, median, p95, samples, unresolved) => {
+    const fetchReport = vi.fn().mockResolvedValue(Response.json(fixture));
+    vi.stubGlobal('fetch', fetchReport);
+    const loaded = await loadBenchmarkReport({ source: 'static', staticUrl: '/benchmark-report.json' });
+    expect(fetchReport).toHaveBeenCalledWith('/benchmark-report.json', expect.any(Object));
+    expect(loaded.source).toBe('static');
+    expect(loaded.report.coverage.full_stack.malicious.unresolved).toBe(unresolved);
+    expect(loaded.report.coverage.llm_only).toEqual(fixture.ablation.llm_only.coverage);
+    expect(loaded.report.latency_sample_count).toBe(samples);
+    expect(loaded.report.median_latency_ms).toBe(median);
+    expect(loaded.report.p95_latency_ms).toBe(p95);
+    expect(loaded.report.classes.map(({ block_rate }) => block_rate)).toEqual(fixture.by_class.map(({ block_rate }) => block_rate));
+    const html = renderToStaticMarkup(<Results loaded={loaded} />);
+    expect(html).toContain(label);
+    expect(html).toContain(median === null ? '>Unavailable<' : '>' + median + ' ms<');
+    expect(html).toContain('P95 ' + (p95 === null ? 'Unavailable' : p95 + ' ms'));
+  });
+
   it('keeps measured zero distinct from unavailable values and renders per-arm coverage', () => {
     const report = validateReport(fixture);
     expect(report.ablation.full_stack.block_rate).toBe(0);

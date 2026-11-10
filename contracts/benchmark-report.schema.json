@@ -230,6 +230,18 @@
               ],
               "minimum": 0,
               "maximum": 1
+            },
+            "coverage": {
+              "$ref": "#/properties/coverage/properties/full_stack"
+            },
+            "median_latency_ms": {
+              "$ref": "#/properties/median_latency_ms"
+            },
+            "p95_latency_ms": {
+              "$ref": "#/properties/p95_latency_ms"
+            },
+            "latency_sample_count": {
+              "$ref": "#/properties/latency_sample_count"
             }
           },
           "required": [
@@ -255,6 +267,9 @@
               ],
               "minimum": 0,
               "maximum": 1
+            },
+            "coverage": {
+              "$ref": "#/properties/coverage/properties/llm_only"
             }
           },
           "required": [
@@ -398,12 +413,59 @@
           }
         }
       }
+    },
+    "report_version": {
+      "const": 1
+    },
+    "by_class": {
+      "$ref": "#/properties/classes"
     }
   },
   "required": [
     "provenance",
-    "classes",
-    "coverage",
     "ablation"
+  ],
+  "allOf": [
+    {
+      "anyOf": [
+        {
+          "required": [
+            "classes"
+          ]
+        },
+        {
+          "required": [
+            "by_class"
+          ]
+        }
+      ]
+    },
+    {
+      "anyOf": [
+        {
+          "required": [
+            "coverage"
+          ]
+        },
+        {
+          "properties": {
+            "ablation": {
+              "properties": {
+                "full_stack": {
+                  "required": [
+                    "coverage"
+                  ]
+                },
+                "llm_only": {
+                  "required": [
+                    "coverage"
+                  ]
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
   ]
 }
