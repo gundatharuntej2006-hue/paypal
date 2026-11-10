@@ -206,6 +206,14 @@ func (v *Verifier) RegisterPrincipal(principalID string, publicKeyBase64 string)
 	}
 }
 
+// GetPrincipalPublicKey returns the registered public key for a principal.
+func (v *Verifier) GetPrincipalPublicKey(principalID string) (string, error) {
+	if v.principalRegistry == nil {
+		return "", ErrUnknownPrincipal
+	}
+	return v.principalRegistry.GetPublicKey(principalID)
+}
+
 // RegisterMerchant registers a merchant in the verifier's merchant registry.
 func (v *Verifier) RegisterMerchant(merchantID string, info MerchantPayeeInfo) {
 	if r, ok := v.merchantRegistry.(*MemoryMerchantRegistry); ok {
@@ -326,10 +334,14 @@ func (v *Verifier) VerifyMandate(req *models.PaymentIntentRequest, now time.Time
 		}, ErrPerTxnCapExceeded
 	}
 
-	// 8. Cumulative total cap
+	// 8. Cumulative total cap (independent tracking for live vs dryrun mode)
 	var totalSpent float64
 	if v.spentTracker != nil {
-		totalSpent, err = v.spentTracker.GetTotalSpent(m.MandateID)
+		trackerMandateID := m.MandateID
+		if req.DryRun {
+			trackerMandateID = "dryrun:" + m.MandateID
+		}
+		totalSpent, err = v.spentTracker.GetTotalSpent(trackerMandateID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to query total spent: %w", err)
 		}

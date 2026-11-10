@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"gateway/pkg/crypto"
 	"gateway/pkg/intelclient"
 	"gateway/pkg/models"
 	"gateway/pkg/statemachine"
@@ -306,3 +307,356 @@ func TestIntegrationRoutes_SSEEnvelopeSchema(t *testing.T) {
 		t.Fatalf("timeout waiting for broker event")
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Tests specifically addressing Tharun's independent security audit findings
+// ---------------------------------------------------------------------------
+
+func TestAuditIssue1_MandateRegistrationSecurity(t *testing.T) {
+	srv, _, _, _ := setupTestServer(nil)
+	srv.cfg.HumanAuthToken = "secret_human_token"
+	router := SetupRouter(srv)
+
+	mandate := models.Mandate{
+		MandateID:   "mdt_audit_1",
+		PrincipalID: "user_audit_principal",
+		PublicKey:   "mc4CAQAwBQYDK2VwBCIEIPTESTPUBLICKEY_AUDIT_1",
+	}
+	body, _ := json.Marshal(mandate)
+
+	// 1. Unauthenticated registration must be rejected with 401
+	req := httptest.NewRequest(http.MethodPost, "/v1/mandates", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 Unauthorized for unauthenticated mandate registration, got %d", rec.Code)
+	}
+
+	// 2. Authenticated registration succeeds
+	req = httptest.NewRequest(http.MethodPost, "/v1/mandates", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer secret_human_token")
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("expected 201 Created for authenticated registration, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// 3. Attempting to overwrite existing principal's public key must be rejected with 409 Conflict
+	tamperedMandate := models.Mandate{
+		MandateID:   "mdt_audit_tampered",
+		PrincipalID: "user_audit_principal",
+		PublicKey:   "mc4CAQAwBQYDK2VwBCIEIPATTACKER_OVERWRITE_KEY",
+	}
+	tamperedBody, _ := json.Marshal(tamperedMandate)
+	req = httptest.NewRequest(http.MethodPost, "/v1/mandates", bytes.NewReader(tamperedBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer secret_human_token")
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("expected 409 Conflict on principal public key replacement, got %d", rec.Code)
+	}
+}
+
+func TestAuditIssue2_MandateOrderSecurityAndDryRun(t *testing.T) {
+	srv, _, _, _ := setupTestServer(nil)
+	srv.cfg.HumanAuthToken = "secret_human_token"
+	srv.cfg.AgentAuthToken = "secret_agent_token"
+	router := SetupRouter(srv)
+
+	// Register mandate
+	mandate := models.Mandate{
+		MandateID:   "mdt_audit_order",
+		PrincipalID: "user_principal_a",
+		AgentID:     "agent_shopper_a",
+		Currency:    "USD",
+	}
+	srv.mandates[mandate.MandateID] = mandate
+
+	draft := map[string]interface{}{
+		"mandate_id":   "mdt_audit_order",
+		"principal_id": "user_principal_a",
+		"agent_id":     "agent_shopper_a",
+		"amount":       25.00,
+		"dry_run":      true,
+	}
+	draftBody, _ := json.Marshal(draft)
+
+	// 1. Unauthenticated request must return 401
+	req := httptest.NewRequest(http.MethodPost, "/v1/mandates/mdt_audit_order/order", bytes.NewReader(draftBody))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401, got %d", rec.Code)
+	}
+
+	// 2. Non-existent mandate must return 404
+	req = httptest.NewRequest(http.MethodPost, "/v1/mandates/non_existent/order", bytes.NewReader(draftBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer secret_human_token")
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("expected 404, got %d", rec.Code)
+	}
+
+	// 3. Ownership mismatch must return 403
+	badOwnerDraft := map[string]interface{}{
+		"principal_id": "user_attacker",
+		"amount":       25.00,
+	}
+	badBody, _ := json.Marshal(badOwnerDraft)
+	req = httptest.NewRequest(http.MethodPost, "/v1/mandates/mdt_audit_order/order", bytes.NewReader(badBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer secret_human_token")
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 on ownership mismatch, got %d", rec.Code)
+	}
+
+	// 4. Authenticated dry-run request succeeds and indicates dry_run
+	req = httptest.NewRequest(http.MethodPost, "/v1/mandates/mdt_audit_order/order", bytes.NewReader(draftBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer secret_agent_token")
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+	var res map[string]interface{}
+	_ = json.NewDecoder(rec.Body).Decode(&res)
+	if res["dry_run"] != true {
+		t.Fatalf("expected dry_run: true in response")
+	}
+}
+
+func TestAuditIssue3_ApprovalsAuthenticationAndRedaction(t *testing.T) {
+	stubIntel := intelclient.NewStubIntelClient()
+	stubIntel.RiskScoreVal = 0.45 // causes step_up
+
+	srv, _, _, reg := setupTestServer(stubIntel)
+	srv.cfg.HumanAuthToken = "secret_human_approver"
+	router := SetupRouter(srv)
+
+	mandate, _ := createTestMandate(t)
+	reg.RegisterPrincipal(mandate.PrincipalID, mandate.PublicKey)
+	srv.mandates[mandate.MandateID] = mandate
+
+	// Submit payment intent that triggers step-up
+	intentReq := models.PaymentIntentRequest{
+		Mandate:        mandate,
+		AgentID:        mandate.AgentID,
+		MerchantID:     "merchant_a",
+		Amount:         "30.00",
+		Currency:       "USD",
+		Category:       "electronics",
+		Items:          []models.Item{{Name: "USB-C Hub", Qty: 1, UnitPrice: "30.00"}},
+		AgentReasoning: "Restock necessary connector",
+		IdempotencyKey: "idemp_su_leak_test",
+		DryRun:         true,
+	}
+	body, _ := json.Marshal(intentReq)
+	req := httptest.NewRequest(http.MethodPost, "/v1/payments/intents", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	// 1. Unauthenticated GET /v1/approvals must return 401
+	req = httptest.NewRequest(http.MethodGet, "/v1/approvals", nil)
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusUnauthorized {
+		t.Fatalf("expected 401 Unauthorized, got %d", rec.Code)
+	}
+
+	// 2. Authenticated GET /v1/approvals returns redacted token (empty string)
+	req = httptest.NewRequest(http.MethodGet, "/v1/approvals", nil)
+	req.Header.Set("Authorization", "Bearer secret_human_approver")
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+	var approvals []map[string]interface{}
+	_ = json.NewDecoder(rec.Body).Decode(&approvals)
+	if len(approvals) == 0 {
+		t.Fatalf("expected at least 1 approval")
+	}
+	for _, app := range approvals {
+		if app["step_up_token"] != "" && app["step_up_token"] != nil {
+			t.Fatalf("step_up_token must be redacted in list approvals, got: %v", app["step_up_token"])
+		}
+	}
+}
+
+func TestAuditIssue4_DemoRunGateAndSyntheticTagging(t *testing.T) {
+	srv, _, _, _ := setupTestServer(nil)
+	router := SetupRouter(srv)
+
+	demoReq := models.DemoRunRequest{Scenario: "happy_path"}
+	body, _ := json.Marshal(demoReq)
+
+	// 1. In production, demo run is strictly blocked
+	srv.cfg.Env = "production"
+	req := httptest.NewRequest(http.MethodPost, "/v1/demo/run", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("expected 403 Forbidden in production, got %d", rec.Code)
+	}
+
+	// 2. In non-production, runs successfully and returns is_synthetic: true
+	srv.cfg.Env = "development"
+	req = httptest.NewRequest(http.MethodPost, "/v1/demo/run", bytes.NewReader(body))
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 in development, got %d", rec.Code)
+	}
+	var res map[string]interface{}
+	_ = json.NewDecoder(rec.Body).Decode(&res)
+	if res["is_synthetic"] != true {
+		t.Fatalf("expected is_synthetic: true in response")
+	}
+}
+
+func TestAuditIssue6_DryRunCumulativeSpendingEnforcement(t *testing.T) {
+	stubIntel := intelclient.NewStubIntelClient()
+	srv, _, led, reg := setupTestServer(stubIntel)
+	router := SetupRouter(srv)
+
+	mandate, privKey := createTestMandate(t)
+	mandate.MandateID = "mdt_dryrun_spending_test"
+	mandate.MaxTotal = "50.00"
+	mandate.MaxPerTxn = "35.00"
+	mandate.StepUpOver = "40.00"
+	if err := crypto.SignMandate(privKey, &mandate); err != nil {
+		t.Fatalf("failed to sign mandate: %v", err)
+	}
+	reg.RegisterPrincipal(mandate.PrincipalID, mandate.PublicKey)
+	srv.mandates[mandate.MandateID] = mandate
+
+	// First payment of $30.00 in dry-run mode -> allowed
+	req1 := models.PaymentIntentRequest{
+		Mandate:        mandate,
+		AgentID:        mandate.AgentID,
+		MerchantID:     "merchant_a",
+		Amount:         "30.00",
+		Currency:       "USD",
+		Category:       "electronics",
+		Items:          []models.Item{{Name: "Connector", Qty: 1, UnitPrice: "30.00"}},
+		IdempotencyKey: "idemp_dryrun_spend_1",
+		DryRun:         true,
+	}
+	b1, _ := json.Marshal(req1)
+	r1 := httptest.NewRequest(http.MethodPost, "/v1/payments/intents", bytes.NewReader(b1))
+	rec1 := httptest.NewRecorder()
+	router.ServeHTTP(rec1, r1)
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec1.Code, rec1.Body.String())
+	}
+	var dec1 models.DecisionResponse
+	_ = json.NewDecoder(rec1.Body).Decode(&dec1)
+	if dec1.Decision != models.DecisionAllow {
+		t.Fatalf("expected allow for first payment, got %s", dec1.Decision)
+	}
+
+	// Second payment of $30.00 under same mandate in dry-run mode -> cumulative 60.00 > 50.00 max_total -> BLOCKED
+	req2 := models.PaymentIntentRequest{
+		Mandate:        mandate,
+		AgentID:        mandate.AgentID,
+		MerchantID:     "merchant_a",
+		Amount:         "30.00",
+		Currency:       "USD",
+		Category:       "electronics",
+		Items:          []models.Item{{Name: "Connector 2", Qty: 1, UnitPrice: "30.00"}},
+		IdempotencyKey: "idemp_dryrun_spend_2",
+		DryRun:         true,
+	}
+	b2, _ := json.Marshal(req2)
+	r2 := httptest.NewRequest(http.MethodPost, "/v1/payments/intents", bytes.NewReader(b2))
+	rec2 := httptest.NewRecorder()
+	router.ServeHTTP(rec2, r2)
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec2.Code)
+	}
+	var dec2 models.DecisionResponse
+	_ = json.NewDecoder(rec2.Body).Decode(&dec2)
+	if dec2.Decision != models.DecisionBlock {
+		t.Fatalf("expected block for exceeding dry-run cumulative max_total, got %s", dec2.Decision)
+	}
+
+	// Verify live spending projection on this mandate remains 0.00 (no contamination)
+	liveSpent, _ := led.GetTotalSpent(mandate.MandateID)
+	if liveSpent != 0.0 {
+		t.Fatalf("expected live spent to remain 0.00, got %.2f", liveSpent)
+	}
+}
+
+func TestAuditIssue7_IdempotencyOwnershipIsolation(t *testing.T) {
+	stubIntel := intelclient.NewStubIntelClient()
+	srv, _, _, reg := setupTestServer(stubIntel)
+	router := SetupRouter(srv)
+
+	mandateA, _ := createTestMandate(t)
+	mandateA.MandateID = "mdt_agent_a"
+	mandateA.AgentID = "agent_shopper_a"
+	reg.RegisterPrincipal(mandateA.PrincipalID, mandateA.PublicKey)
+	srv.mandates[mandateA.MandateID] = mandateA
+
+	// Agent A submits with idempotency key "idemp_shared_key"
+	reqA := models.PaymentIntentRequest{
+		Mandate:        mandateA,
+		AgentID:        mandateA.AgentID,
+		MerchantID:     "merchant_a",
+		Amount:         "10.00",
+		Currency:       "USD",
+		Category:       "electronics",
+		Items:          []models.Item{{Name: "Item A", Qty: 1, UnitPrice: "10.00"}},
+		IdempotencyKey: "idemp_shared_key",
+		DryRun:         true,
+	}
+	bA, _ := json.Marshal(reqA)
+	rA := httptest.NewRequest(http.MethodPost, "/v1/payments/intents", bytes.NewReader(bA))
+	recA := httptest.NewRecorder()
+	router.ServeHTTP(recA, rA)
+	if recA.Code != http.StatusOK {
+		t.Fatalf("expected 200 for agent A, got %d", recA.Code)
+	}
+
+	// Agent B submits with same idempotency key "idemp_shared_key" under different mandate
+	mandateB, _ := createTestMandate(t)
+	mandateB.MandateID = "mdt_agent_b"
+	mandateB.AgentID = "agent_shopper_b"
+	reg.RegisterPrincipal(mandateB.PrincipalID, mandateB.PublicKey)
+	srv.mandates[mandateB.MandateID] = mandateB
+
+	reqB := models.PaymentIntentRequest{
+		Mandate:        mandateB,
+		AgentID:        mandateB.AgentID,
+		MerchantID:     "merchant_a",
+		Amount:         "15.00",
+		Currency:       "USD",
+		Category:       "electronics",
+		Items:          []models.Item{{Name: "Item B", Qty: 1, UnitPrice: "15.00"}},
+		IdempotencyKey: "idemp_shared_key",
+		DryRun:         true,
+	}
+	bB, _ := json.Marshal(reqB)
+	rB := httptest.NewRequest(http.MethodPost, "/v1/payments/intents", bytes.NewReader(bB))
+	recB := httptest.NewRecorder()
+	router.ServeHTTP(recB, rB)
+
+	// Must NOT be a cache hit for Agent A's decision!
+	if recB.Header().Get("X-Cache-Lookup") == "HIT" {
+		t.Fatalf("idempotency key must not be shared across different mandates/agents!")
+	}
+}
+

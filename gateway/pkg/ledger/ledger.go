@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -296,6 +297,11 @@ func (m *MemoryLedger) ReleaseBudgetReservation(ctx context.Context, mandateID s
 	if resMap, ok := m.budgetReservations[mandateID]; ok {
 		delete(resMap, paymentID)
 	}
+	if !strings.HasPrefix(mandateID, "dryrun:") {
+		if resMap, ok := m.budgetReservations["dryrun:"+mandateID]; ok {
+			delete(resMap, paymentID)
+		}
+	}
 }
 
 func (m *MemoryLedger) CommitBudgetReservation(ctx context.Context, mandateID string, paymentID string) {
@@ -303,6 +309,12 @@ func (m *MemoryLedger) CommitBudgetReservation(ctx context.Context, mandateID st
 	defer m.mu.Unlock()
 
 	resMap, ok := m.budgetReservations[mandateID]
+	if !ok {
+		// Also check dry-run reservation map
+		if !strings.HasPrefix(mandateID, "dryrun:") {
+			resMap, ok = m.budgetReservations["dryrun:"+mandateID]
+		}
+	}
 	if !ok {
 		return
 	}
@@ -319,15 +331,20 @@ func (m *MemoryLedger) CommitBudgetReservation(ctx context.Context, mandateID st
 		pProj.SpentCommitted = true
 	}
 
-	if !isDry && mandateID != "" {
-		mProj, ok := m.mandateProjections[mandateID]
+	targetMandateID := mandateID
+	if isDry && !strings.HasPrefix(targetMandateID, "dryrun:") {
+		targetMandateID = "dryrun:" + targetMandateID
+	}
+
+	if targetMandateID != "" {
+		mProj, ok := m.mandateProjections[targetMandateID]
 		if !ok {
 			mProj = &models.MandateProjection{
-				MandateID:  mandateID,
+				MandateID:  targetMandateID,
 				TotalSpent: "0.00",
 				Currency:   "USD",
 			}
-			m.mandateProjections[mandateID] = mProj
+			m.mandateProjections[targetMandateID] = mProj
 		}
 		curSpent, _ := strconv.ParseFloat(mProj.TotalSpent, 64)
 		mProj.TotalSpent = fmt.Sprintf("%.2f", curSpent+amt)
@@ -1128,14 +1145,18 @@ func (p *PostgresLedger) CommitBudgetReservation(ctx context.Context, mandateID 
 		if pMandateID != "" {
 			mandateID = pMandateID
 		}
-		if !isDryRun && mandateID != "" {
+		targetMandateID := mandateID
+		if isDryRun && !strings.HasPrefix(targetMandateID, "dryrun:") {
+			targetMandateID = "dryrun:" + targetMandateID
+		}
+		if targetMandateID != "" {
 			_, _ = tx.ExecContext(ctx, `
 				INSERT INTO projections_mandates (mandate_id, principal_id, total_spent, currency, last_updated)
 				VALUES ($1, '', $2, 'USD', $3)
 				ON CONFLICT (mandate_id) DO UPDATE SET
 					total_spent = (CAST(projections_mandates.total_spent AS NUMERIC) + CAST(EXCLUDED.total_spent AS NUMERIC))::TEXT,
 					last_updated = EXCLUDED.last_updated
-			`, mandateID, fmt.Sprintf("%.2f", amount), time.Now().UTC())
+			`, targetMandateID, fmt.Sprintf("%.2f", amount), time.Now().UTC())
 
 			_, _ = tx.ExecContext(ctx, `UPDATE projections_payments SET spent_committed = TRUE WHERE payment_id = $1`, paymentID)
 		}
