@@ -1,0 +1,16 @@
+.demo-banner {
+  display: flex; flex-wrap: wrap; gap: .4rem .75rem; padding: .55rem .8rem; margin-bottom: 1rem;
+  background: var(--accent-bg); color: var(--accent); border-radius: .55rem; font-size: .85rem;
+}
+.demo-panel { display: grid; gap: .55rem; margin-bottom: 1rem; }
+.demo-panel h2, .demo-panel p { margin: 0; }
+.demo-panel p { font-size: .88rem; }
+.demo-panel label { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; font-size: .85rem; }
+.demo-panel select {
+  max-width: 100%; border: 1px solid var(--border); border-radius: .45rem; padding: .4rem .55rem;
+  background: var(--surface); color: var(--text); font: inherit;
+}
+.demo-panel [role="alert"] { color: var(--block); }
+.startup-screen { min-height: 100vh; display: grid; place-items: center; }
+.startup-screen section { width: min(100%, 34rem); padding: 1.5rem; }
+.startup-screen h1 { font-size: clamp(1.8rem, 5vw, 2.6rem); }

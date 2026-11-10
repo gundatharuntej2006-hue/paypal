@@ -18,6 +18,7 @@ The [Render Blueprint setup guide](https://render.com/docs/infrastructure-as-cod
 | --- | --- | --- |
 | Gateway | `DATABASE_URL` | Render injects the internal Postgres connection string from `agentguard-db`. |
 | Gateway | `INTELLIGENCE_HOSTPORT` | Render injects the intelligence service's private hostname and port. |
+| Gateway | `CORS_ALLOWED_ORIGINS` | Set to the exact dashboard origin, normally `https://agentguard-dashboard.onrender.com`. |
 | Gateway | `PAYPAL_BASE_URL` | Set by the Blueprint to the PayPal sandbox API. |
 | Gateway | `PAYPAL_CLIENT_ID` | Enter the sandbox application's client ID. |
 | Gateway | `PAYPAL_CLIENT_SECRET` | Enter the sandbox application's client secret. |
@@ -27,9 +28,14 @@ The [Render Blueprint setup guide](https://render.com/docs/infrastructure-as-cod
 | Gateway and intelligence | `PORT` | Render supplies the listening port, which defaults to `10000`. |
 | Intelligence | `LLM_API_KEY` | Enter Atul's provider API key. |
 | Dashboard | `VITE_GATEWAY_URL` | Render resolves this at build time from the gateway's public `RENDER_EXTERNAL_URL`. |
-| Dashboard | `VITE_PAYPAL_CLIENT_ID` | When the browser SDK is enabled, add the public sandbox client ID under **agentguard-dashboard > Environment**, then rebuild. |
+| Dashboard | `VITE_PAYPAL_CLIENT_ID` | Blueprint copies the public sandbox application client ID from the gateway. |
+| Dashboard | `VITE_USE_STUB` | Blueprint sets false for the live sandbox. Set true on a standalone preview static site. |
+| Dashboard | `VITE_DEMO_MODE` | Blueprint sets true to show the demo panel. |
+| Dashboard | `VITE_DEMO_RUN_URL` | Optional override for the sandbox trigger. Defaults to the gateway URL plus `/v1/demo/run`. |
 | Dashboard | `VITE_BENCHMARK_SOURCE` | Optional. Defaults to `auto`, which checks for a published static report before querying the configured gateway. Set `static` or `gateway` to use one source. |
 | Dashboard | `VITE_BENCHMARK_REPORT_URL` | Optional. Defaults to `/benchmark-report.json`. Copy a measured run to `dashboard/public/benchmark-report.json` before building to publish it at this URL. |
 
 
 Render prompts for `sync: false` values on initial creation. For later changes, open the relevant service's **Environment** tab. Vite exposes `VITE_` variables to the browser, so use that prefix only for public settings. See [Render environment variables](https://render.com/docs/environment-variables).
+
+See [deployment checklist](deployment-checklist.md) for the manual seed and private-browser walkthrough.

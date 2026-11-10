@@ -1,7 +1,7 @@
 import { loadBenchmarkReport } from '../benchmark/report';
 import type { MandateDraft } from '../lib/mandate';
 import type { EventEnvelope, Mandate } from '../contracts/types';
-import type { ApprovalPayment, Payment } from './models';
+import type { ApprovalPayment, DemoScenario, Payment } from './models';
 import { stub } from './stub';
 
 export const useStub = import.meta.env.VITE_USE_STUB !== 'false';
@@ -29,7 +29,29 @@ async function review(id: string, action: 'approve' | 'reject', detail?: string)
   if (!response.ok) throw new GatewayError(response.status);
 }
 
+export async function checkGatewayHealth(signal: AbortSignal) {
+  const response = await fetch(gateway + '/health', {
+    cache: 'no-store', signal: AbortSignal.any([signal, AbortSignal.timeout(8000)]),
+  });
+  if (!response.ok || response.headers.get('content-type')?.includes('text/html')) {
+    throw new GatewayError(response.status);
+  }
+}
+
+const demoRunUrl = import.meta.env.VITE_DEMO_RUN_URL?.trim() || gateway + '/v1/demo/run';
+
+async function runDemoScenario(scenario: DemoScenario, mandateId?: string) {
+  const response = await fetch(demoRunUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ scenario, mandate_id: mandateId, idempotency_key: crypto.randomUUID() }),
+    signal: AbortSignal.timeout(15_000),
+  });
+  if (!response.ok) throw new GatewayError(response.status);
+}
+
 const live: typeof stub = {
+  runDemoScenario,
   listMandates: () => request<Mandate[]>('/mandates'),
   createMandate: (mandate) => request<Mandate>('/mandates', {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(mandate),

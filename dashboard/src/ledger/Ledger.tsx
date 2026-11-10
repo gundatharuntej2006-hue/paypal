@@ -1,3 +1,4 @@
+import { DemoPanel } from '../demo/DemoPanel';
 import { useMemo, useRef, useState } from 'react';
 import type { RefObject } from 'react';
 import { Link } from 'react-router-dom';
@@ -142,6 +143,7 @@ export function Ledger({ events, connected }: { events: EventEnvelope[]; connect
       <p className="eyebrow">Activity / Audit stream</p><h1>Live Ledger</h1>
       <p>Inspect payment decisions, security checks, and PayPal activity as events arrive.</p>
     </header>
+    <DemoPanel />
     <div className="ledger-counters" aria-label="Payment counts">
       <div className="panel"><span>Total payments</span><strong>{projection.counts.total}</strong></div>
       <div className="panel"><span>Allowed</span><strong className="counter-allow">{projection.counts.allow}</strong></div>

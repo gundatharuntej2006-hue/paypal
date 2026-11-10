@@ -19,3 +19,5 @@ export interface ApprovalPayment extends Omit<Payment, 'risk_score' | 'checks' |
   approval_order_id?: string;
   approval_intent?: 'authorize' | 'capture';
 }
+
+export type DemoScenario = 'happy_path' | 'poisoned_page' | 'budget_splitting';

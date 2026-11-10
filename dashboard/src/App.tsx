@@ -1,3 +1,5 @@
+import { DemoBanner } from './demo/DemoPanel';
+import { HostedStartup } from './demo/HostedStartup';
 import { Approvals } from './approvals/Approvals';
 import { useApprovalInbox } from './approvals/inbox';
 import { PaymentRoute } from './payments/PaymentDetail';
@@ -101,7 +103,7 @@ function Mandates() {
   </Page>;
 }
 
-export function App() {
+function Workspace() {
   const [connected, setConnected] = useState(false);
   const [ledgerEvents, setLedgerEvents] = useState<EventEnvelope[]>([]);
   const inbox = useApprovalInbox(ledgerEvents, connected);
@@ -121,6 +123,7 @@ export function App() {
     <div className="workspace">
       <div className="topbar"><span>Payment firewall</span><ConnectionStatus connected={connected} /></div>
       <main>
+        <DemoBanner />
         <Routes>
           <Route index element={<Navigate replace to="/ledger" />} />
           <Route path="/mandates" element={<Mandates />} />
@@ -133,4 +136,8 @@ export function App() {
       </main>
     </div>
   </div>;
+}
+
+export function App() {
+  return <HostedStartup><Workspace /></HostedStartup>;
 }

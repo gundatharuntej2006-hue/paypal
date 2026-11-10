@@ -1,9 +1,12 @@
+# Render free web instances can sleep when idle. Keep private-network services and Postgres in one region.
 services:
   - type: web
     name: agentguard-gateway
     runtime: go
     branch: ritika
+    autoDeploy: true
     rootDir: gateway
+    region: oregon
     plan: free
     buildCommand: mkdir -p bin && go build -o bin/gateway .
     startCommand: ./bin/gateway
@@ -18,6 +21,8 @@ services:
           type: web
           name: agentguard-intelligence
           property: hostport
+      - key: CORS_ALLOWED_ORIGINS
+        sync: false # Set the exact public dashboard origin at Blueprint setup.
       - key: PAYPAL_BASE_URL
         value: https://api-m.sandbox.paypal.com
       - key: PAYPAL_CLIENT_ID
@@ -35,7 +40,9 @@ services:
     name: agentguard-intelligence
     runtime: python
     branch: ritika
+    autoDeploy: true
     rootDir: intelligence
+    region: oregon
     plan: free
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
@@ -46,8 +53,10 @@ services:
 
   - type: web
     name: agentguard-dashboard
+    # Static sites use Render CDN and have no plan, region, or HTTP health check setting.
     runtime: static
     branch: ritika
+    autoDeploy: true
     rootDir: dashboard
     buildCommand: npm ci && npm run build
     staticPublishPath: dist
@@ -56,13 +65,24 @@ services:
         source: /*
         destination: /index.html
     envVars:
+      - key: VITE_USE_STUB
+        value: "false"
+      - key: VITE_DEMO_MODE
+        value: "true"
+      - key: VITE_PAYPAL_CLIENT_ID
+        fromService:
+          type: web
+          name: agentguard-gateway
+          envVarKey: PAYPAL_CLIENT_ID
       - key: VITE_GATEWAY_URL
         fromService:
           type: web
           name: agentguard-gateway
           envVarKey: RENDER_EXTERNAL_URL
 
+# Postgres uses platform health monitoring. Run demo seeding manually from the deployment checklist.
 databases:
   - name: agentguard-db
+    region: oregon
     plan: free
     ipAllowList: []
