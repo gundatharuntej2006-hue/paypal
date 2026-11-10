@@ -104,6 +104,8 @@ services:
     envVars:
       - key: VITE_USE_STUB
         value: "false"
+      - key: VITE_BENCHMARK_SOURCE
+        value: static
       - key: VITE_DEMO_MODE
         value: "true"
       - key: VITE_PAYPAL_CLIENT_ID

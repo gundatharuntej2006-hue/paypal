@@ -32,7 +32,7 @@ The [Render Blueprint setup guide](https://render.com/docs/infrastructure-as-cod
 | Dashboard | `VITE_USE_STUB` | Blueprint sets false for the live sandbox. Set true on a standalone preview static site. |
 | Dashboard | `VITE_DEMO_MODE` | Blueprint sets true to show the demo panel. |
 | Dashboard | `VITE_DEMO_RUN_URL` | Optional override for the sandbox trigger. Defaults to the gateway URL plus `/v1/demo/run`. |
-| Dashboard | `VITE_BENCHMARK_SOURCE` | Optional. Defaults to `auto`, which checks for a published static report before querying the configured gateway. Set `static` or `gateway` to use one source. |
+| Dashboard | `VITE_BENCHMARK_SOURCE` | Blueprint uses `static` for the first integrated demo. In local auto mode the client checks the static report before a configured gateway. |
 | Dashboard | `VITE_BENCHMARK_REPORT_URL` | Optional. Defaults to `/benchmark-report.json`. Copy a measured run to `dashboard/public/benchmark-report.json` before building to publish it at this URL. |
 
 

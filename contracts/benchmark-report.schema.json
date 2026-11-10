@@ -1,21 +1,16 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "title": "AgentGuard benchmark report",
-  "description": "One run with attack-class aggregates and per-scenario results. Rates are fractions from 0 to 1 and durations are in milliseconds.",
+  "title": "AgentGuard benchmark summary",
+  "description": "Rates use observed decisions. Null means unavailable. A numeric zero is an observed result.",
   "type": "object",
-  "required": [
-    "run_id",
-    "generated_at",
-    "totals",
-    "by_class",
-    "false_positive_rate",
-    "median_latency_ms",
-    "p95_latency_ms",
-    "catching_layer_counts",
-    "ablation",
-    "scenarios"
-  ],
   "properties": {
+    "provenance": {
+      "enum": [
+        "genuine",
+        "synthetic",
+        "unexecuted"
+      ]
+    },
     "run_id": {
       "type": "string",
       "minLength": 1
@@ -24,143 +19,321 @@
       "type": "string",
       "format": "date-time"
     },
-    "totals": {
-      "type": "object",
-      "required": [
-        "attacks",
-        "benign"
-      ],
-      "properties": {
-        "attacks": {
-          "type": "integer",
-          "minimum": 0
-        },
-        "benign": {
-          "type": "integer",
-          "minimum": 0
-        }
-      }
-    },
-    "by_class": {
+    "classes": {
       "type": "array",
       "items": {
         "type": "object",
-        "required": [
-          "class",
-          "total",
-          "blocked",
-          "block_rate"
-        ],
         "properties": {
-          "class": {
+          "name": {
             "type": "string",
             "minLength": 1
           },
           "total": {
-            "type": "integer",
+            "type": [
+              "integer",
+              "null"
+            ],
             "minimum": 0
           },
           "blocked": {
-            "type": "integer",
+            "type": [
+              "integer",
+              "null"
+            ],
             "minimum": 0
           },
           "block_rate": {
-            "type": "number",
+            "type": [
+              "number",
+              "null"
+            ],
             "minimum": 0,
             "maximum": 1
           }
-        }
+        },
+        "required": [
+          "name",
+          "total",
+          "blocked"
+        ]
       }
     },
+    "coverage": {
+      "type": "object",
+      "properties": {
+        "full_stack": {
+          "type": "object",
+          "properties": {
+            "malicious": {
+              "type": "object",
+              "properties": {
+                "planned": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "observed": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "unresolved": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "planned",
+                "observed",
+                "unresolved"
+              ]
+            },
+            "benign": {
+              "type": "object",
+              "properties": {
+                "planned": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "observed": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "unresolved": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "planned",
+                "observed",
+                "unresolved"
+              ]
+            }
+          },
+          "required": [
+            "malicious",
+            "benign"
+          ]
+        },
+        "llm_only": {
+          "type": "object",
+          "properties": {
+            "malicious": {
+              "type": "object",
+              "properties": {
+                "planned": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "observed": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "unresolved": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "planned",
+                "observed",
+                "unresolved"
+              ]
+            },
+            "benign": {
+              "type": "object",
+              "properties": {
+                "planned": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "observed": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                },
+                "unresolved": {
+                  "type": [
+                    "integer",
+                    "null"
+                  ],
+                  "minimum": 0
+                }
+              },
+              "required": [
+                "planned",
+                "observed",
+                "unresolved"
+              ]
+            }
+          },
+          "required": [
+            "malicious",
+            "benign"
+          ]
+        }
+      },
+      "required": [
+        "full_stack",
+        "llm_only"
+      ]
+    },
+    "ablation": {
+      "type": "object",
+      "properties": {
+        "full_stack": {
+          "type": "object",
+          "properties": {
+            "block_rate": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 1
+            },
+            "false_positive_rate": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 1
+            }
+          },
+          "required": [
+            "block_rate",
+            "false_positive_rate"
+          ]
+        },
+        "llm_only": {
+          "type": "object",
+          "properties": {
+            "block_rate": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 1
+            },
+            "false_positive_rate": {
+              "type": [
+                "number",
+                "null"
+              ],
+              "minimum": 0,
+              "maximum": 1
+            }
+          },
+          "required": [
+            "block_rate",
+            "false_positive_rate"
+          ]
+        }
+      },
+      "required": [
+        "full_stack",
+        "llm_only"
+      ]
+    },
     "false_positive_rate": {
-      "type": "number",
+      "type": [
+        "number",
+        "null"
+      ],
       "minimum": 0,
       "maximum": 1
     },
     "median_latency_ms": {
-      "type": "number",
+      "type": [
+        "number",
+        "null"
+      ],
       "minimum": 0
     },
     "p95_latency_ms": {
-      "type": "number",
+      "type": [
+        "number",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "latency_sample_count": {
+      "type": [
+        "integer",
+        "null"
+      ],
       "minimum": 0
     },
     "catching_layer_counts": {
       "type": "object",
-      "required": [
-        "mandate",
-        "injection",
-        "intent",
-        "risk",
-        "other"
-      ],
       "properties": {
         "mandate": {
-          "type": "integer",
+          "type": [
+            "integer",
+            "null"
+          ],
           "minimum": 0
         },
         "injection": {
-          "type": "integer",
+          "type": [
+            "integer",
+            "null"
+          ],
           "minimum": 0
         },
         "intent": {
-          "type": "integer",
+          "type": [
+            "integer",
+            "null"
+          ],
           "minimum": 0
         },
         "risk": {
-          "type": "integer",
+          "type": [
+            "integer",
+            "null"
+          ],
           "minimum": 0
         },
         "other": {
-          "type": "integer",
+          "type": [
+            "integer",
+            "null"
+          ],
           "minimum": 0
-        }
-      }
-    },
-    "ablation": {
-      "type": "object",
-      "required": [
-        "llm_only",
-        "full_stack"
-      ],
-      "properties": {
-        "llm_only": {
-          "type": "object",
-          "required": [
-            "block_rate",
-            "false_positive_rate"
-          ],
-          "properties": {
-            "block_rate": {
-              "type": "number",
-              "minimum": 0,
-              "maximum": 1
-            },
-            "false_positive_rate": {
-              "type": "number",
-              "minimum": 0,
-              "maximum": 1
-            }
-          }
-        },
-        "full_stack": {
-          "type": "object",
-          "required": [
-            "block_rate",
-            "false_positive_rate"
-          ],
-          "properties": {
-            "block_rate": {
-              "type": "number",
-              "minimum": 0,
-              "maximum": 1
-            },
-            "false_positive_rate": {
-              "type": "number",
-              "minimum": 0,
-              "maximum": 1
-            }
-          }
         }
       }
     },
@@ -202,7 +375,8 @@
               "allow",
               "step_up",
               "block",
-              "error"
+              "error",
+              null
             ]
           },
           "layer": {
@@ -216,15 +390,20 @@
             ]
           },
           "latency_ms": {
-            "type": "number",
+            "type": [
+              "number",
+              "null"
+            ],
             "minimum": 0
           }
         }
       }
-    },
-    "sample": {
-      "type": "boolean",
-      "description": "True only for illustrative results."
     }
-  }
+  },
+  "required": [
+    "provenance",
+    "classes",
+    "coverage",
+    "ablation"
+  ]
 }

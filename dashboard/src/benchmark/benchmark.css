@@ -25,3 +25,5 @@
 .benchmark-filters label { display: flex; align-items: center; gap: .4rem; color: var(--muted); font-size: .85rem; }
 .benchmark-filters select { max-width: 11rem; padding: .4rem .5rem; border: 1px solid var(--border); border-radius: .4rem; background: var(--surface); color: var(--text); }
 .benchmark-grid .ag-cell .pill { line-height: 1.2; }
+
+.benchmark-coverage { margin-bottom: 1rem; }

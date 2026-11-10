@@ -12,9 +12,9 @@ The dashboard shell defaults to the in-memory stub. Set `VITE_USE_STUB=false` an
 
 ## Benchmark (Tharun and Vivek)
 
-Use [the proposed benchmark report schema](../contracts/benchmark-report.schema.json) for one complete run and confirm the field names with the dashboard workstream. Put a measured run in dashboard/public/benchmark-report.json, or serve it from GET /v1/benchmark/report. The dashboard checks the static file first in auto mode and uses the configured gateway if a published file is missing. Set VITE_BENCHMARK_SOURCE to static or gateway to choose a single source, and VITE_BENCHMARK_REPORT_URL to override the static URL.
+Publish the first adapter report at dashboard/public/benchmark-report.json before building. The Render demo selects static loading. The dashboard supports the [summary schema](../contracts/benchmark-report.schema.json) with classes[].name, provenance, coverage per arm and cohort, and nested ablation. It also accepts by_class as an alias for classes.
 
-Report rates as fractions from 0 to 1 and latency in milliseconds. Use attack classes only in by_class, include every attack and benign scenario exactly once in scenarios, and use null for an unassigned catching layer. Use error as actual when the runner cannot obtain a decision. Mark illustrative runs with sample set to true and omit that flag for measured results.
+Class totals count observed malicious decisions. Blocks exclude step-up, and benign false positives include block and step-up. Preserve null for unavailable metrics and use zero only when it is known. Coverage reports planned, observed, and unresolved counts for malicious and benign scenarios in each arm. Scenario rows and catching-layer counts are optional. Please share the genuine, synthetic, and unexecuted adapter fixtures to verify the exact wire shape.
 
 ## Mandate signing and PayPal consent (Vivek)
 

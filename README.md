@@ -115,7 +115,7 @@ Use the [Render setup guide](docs/render-setup.md) and [private-browser deployme
 
 ## Benchmark results
 
-Open the [local Benchmark dashboard](http://localhost:5173/benchmark) or inspect the [labeled sample report](dashboard/src/benchmark/benchmark-report.sample.json). A measured run can be published at `/benchmark-report.json` or served by `GET /v1/benchmark/report` using the [report schema](contracts/benchmark-report.schema.json). <!-- VERIFY -->
+Open the [local Benchmark dashboard](http://localhost:5173/benchmark) or inspect the [labeled synthetic sample](dashboard/src/benchmark/benchmark-report.sample.json). For the integrated demo, copy the adapter output to `dashboard/public/benchmark-report.json` before building. The Render dashboard uses the static report. See the [summary schema](contracts/benchmark-report.schema.json) for nullable metrics, provenance, and per-arm coverage. A genuine measured run is pending. <!-- VERIFY -->
 
 | Metric | Measured run |
 | --- | --- |
