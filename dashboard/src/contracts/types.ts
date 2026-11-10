@@ -103,7 +103,14 @@ export type EventType =
   | 'paypal.voided'
   | 'paypal.refunded'
   | 'webhook.received'
-  | 'reconciliation.mismatch';
+  | 'reconciliation.mismatch'
+  | 'reconciliation.completed'
+  | 'payout.created'
+  | 'payout.updated'
+  | 'invoice.paid'
+  | 'payment.step_up_token_issued'
+  | 'payment.step_up_token_consumed'
+  | 'paypal.capture_failed';
 
 export interface EventEnvelope {
   id: string;

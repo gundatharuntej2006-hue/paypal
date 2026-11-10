@@ -74,7 +74,7 @@ Open [http://localhost:5173](http://localhost:5173). The default `VITE_USE_STUB=
 
 ### Full sandbox stack
 
-The commands below mirror the service paths and entry points in [render.yaml](render.yaml). Use them after the teammates' services land and their configuration is confirmed. The current branch has no gateway, intelligence service, agent, mock merchant service, or benchmark runner to start locally. <!-- VERIFY -->
+The gateway and intel service are integrated on `ritika`. See [gateway setup](gateway/README.md) and [intel setup](intel/README.md) for configuration. The agent, mock merchants, and benchmark runner remain external to this checkout.
 
 The proposed stack requires Go, Python 3, Postgres, and a PayPal Sandbox application and buyer account. Confirm runtime versions when the service manifests land. <!-- VERIFY -->
 
@@ -82,10 +82,10 @@ The proposed stack requires Go, Python 3, Postgres, and a PayPal Sandbox applica
 2. In a terminal at the repo root, start intelligence using the Blueprint's expected Python layout. <!-- VERIFY -->
 
    ```powershell
-   Set-Location intelligence
+   Set-Location intel
    python -m venv .venv
-   ./.venv/Scripts/python.exe -m pip install -r requirements.txt
-   ./.venv/Scripts/python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8000
+   ./.venv/Scripts/python.exe -m pip install -e .
+   ./.venv/Scripts/python.exe -m uvicorn intel.main:app --host 127.0.0.1 --port 8000
    ```
 
 3. In a second terminal at the repo root, supply the sandbox gateway variables below and start the proposed Go entry point. <!-- VERIFY -->
@@ -93,8 +93,8 @@ The proposed stack requires Go, Python 3, Postgres, and a PayPal Sandbox applica
    ```powershell
    Set-Location gateway
    $env:PORT = '8080'
-   $env:INTELLIGENCE_HOSTPORT = '127.0.0.1:8000'
-   go run .
+   $env:INTEL_SERVICE_URL = '127.0.0.1:8000'
+   go run ./cmd/gateway
    ```
 
 4. From the repo root, seed the running sandbox with a signed, approved demo mandate kept outside Git. Follow the [seed prerequisites](docs/deployment-checklist.md#manual-seed-trigger). The script was exercised against a local fixture. Its live gateway behavior is pending. <!-- VERIFY -->
@@ -139,9 +139,9 @@ Open the [local Benchmark dashboard](http://localhost:5173/benchmark) or inspect
 | Vitest | Covers mandate validation and signatures, ledger event projection, and payment timeline order. |
 | Postman | Checks the proposed gateway routes, HTTP statuses, and response contracts against a local fixture. |
 
-The PayPal REST API inventory is pending a code audit because the gateway PayPal client is absent from this checkout. Live checkout has been exercised with a local fixture. <!-- VERIFY -->
+See the [Devpost tools inventory](docs/devpost/tools-list.md) for the implemented PayPal REST calls and verification status.
 
-AI model IDs and APIMatic usage are pending verification. Record the model IDs, their roles, and any APIMatic-generated clients once the service code can be inspected. <!-- VERIFY -->
+Intel configures Claude Haiku 5.5 for injection classification and intent judging. Live-key verification and APIMatic usage remain pending.
 
 ## Project structure
 
@@ -174,11 +174,11 @@ The server settings come from the Blueprint. Confirm their names and accepted va
 
 | Scope | Variables | Purpose |
 | --- | --- | --- |
-| Gateway | `PORT`, `DATABASE_URL`, `INTELLIGENCE_HOSTPORT` | HTTP binding, Postgres connection, and intelligence host and port. |
+| Gateway | `PORT`, `DATABASE_URL`, `INTEL_SERVICE_URL` | HTTP binding, Postgres connection, and intelligence host and port. |
 | Gateway | `CORS_ALLOWED_ORIGINS` | Exact dashboard origin, including scheme and port when present. |
 | Gateway | `PAYPAL_BASE_URL`, `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET`, `PAYPAL_WEBHOOK_ID` | Sandbox base URL and credentials. Keep the secret on the server. |
 | Gateway | `MANDATE_PUBLIC_KEY`, `MANDATE_PRIVATE_KEY` | Proposed gateway key configuration. Confirm key formats and enrollment. |
-| Intelligence | `PORT`, `LLM_API_KEY` | HTTP binding and server-side provider key. |
+| Intelligence | `PORT`, `ANTHROPIC_API_KEY` | HTTP binding and server-side provider key. |
 | Seed command | `DEMO_GATEWAY_URL`, `DEMO_SANDBOX` | Sandbox gateway URL and explicit sandbox opt-in (`1`). |
 
 ## Testing

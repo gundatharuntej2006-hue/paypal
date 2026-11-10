@@ -1,14 +1,14 @@
 # Deploy AgentGuard on Render
 
-The Blueprint can be reviewed now. Deploy after the gateway and intelligence entry points land on `ritika`. See [service handoffs](render-notes.md).
+The merged Blueprint uses `intel`, `pip install -e .`, and `uvicorn intel.main:app`. Resolve the [gateway integration blockers](requests-to-teammates.md#merged-gateway-integration-blockers) before public live deployment.
 
 1. Sign in to the [Render Dashboard](https://dashboard.render.com/). Click **New > Blueprint**.
 2. Under GitHub, connect your account if prompted. Grant Render access to `gundatharuntej2006-hue/paypal`, then click **Connect** next to that repository.
 3. Enter `agentguard` as the Blueprint name, choose **ritika** in **Branch**, and leave **Blueprint Path** at `render.yaml`.
-4. Review the three services and the Postgres database. Fill the prompted values from the table below. Confirm the free plan availability in your workspace before deploying.
+4. Review the three services and the Postgres database. Fill the prompted values from the table below. Review the Blueprint Starter plans before deploying.
 5. Click **Deploy Blueprint**. Open each web service's **Events** and **Logs** to check the deploy. Open the gateway and intelligence service URLs with `/health` appended and verify both return HTTP 200. Open the dashboard URL to verify the static build.
-6. Open **agentguard-gateway** in Render. Copy the public HTTPS URL shown below its name and append `/webhooks/paypal`. Share that full URL with Atul once the gateway is healthy. Register it for the sandbox app once the POST handler is ready.
-7. After sandbox registration, open **agentguard-gateway > Environment > Edit** and replace the initial `PAYPAL_WEBHOOK_ID` value with the ID PayPal assigned. Save and redeploy. Verify delivery with a sandbox event.
+6. Open **agentguard-intel** in Render. Copy the public HTTPS URL shown below its name and append `/webhooks/paypal`. Share that full URL with Atul once the gateway is healthy. Register it for the sandbox app once the POST handler is ready.
+7. After sandbox registration, open **agentguard-intel > Environment > Edit** and replace the initial `PAYPAL_WEBHOOK_ID` value with the ID PayPal assigned. Save and redeploy. Verify delivery with a sandbox event.
 
 The [Render Blueprint setup guide](https://render.com/docs/infrastructure-as-code) shows the connection and deployment screens.
 
@@ -16,17 +16,16 @@ The [Render Blueprint setup guide](https://render.com/docs/infrastructure-as-cod
 
 | Resource | Variable | Value |
 | --- | --- | --- |
-| Gateway | `DATABASE_URL` | Render injects the internal Postgres connection string from `agentguard-db`. |
-| Gateway | `INTELLIGENCE_HOSTPORT` | Render injects the intelligence service's private hostname and port. |
-| Gateway | `CORS_ALLOWED_ORIGINS` | Set to the exact dashboard origin, normally `https://agentguard-dashboard.onrender.com`. |
-| Gateway | `PAYPAL_BASE_URL` | Set by the Blueprint to the PayPal sandbox API. |
-| Gateway | `PAYPAL_CLIENT_ID` | Enter the sandbox application's client ID. |
-| Gateway | `PAYPAL_CLIENT_SECRET` | Enter the sandbox application's client secret. |
-| Gateway | `PAYPAL_WEBHOOK_ID` | Enter the sandbox registration ID if available. For the first deployment, coordinate an unset or pending value with Vivek so health can pass while webhook verification stays disabled or rejects deliveries. Replace it after registration. |
-| Gateway | `MANDATE_PUBLIC_KEY` | Enter the Ed25519 public key in the format Vivek confirms. |
-| Gateway | `MANDATE_PRIVATE_KEY` | Enter a sandbox-only signing key if Vivek confirms the gateway needs it. Human signing keys stay with the signer. |
+| Gateway | `DATABASE_URL` | Render injects the internal Postgres connection string from `agentguard-postgres`. |
+| Gateway | `INTEL_SERVICE_URL` | Render injects the intelligence service's private hostname and port. |
+| Gateway | `PAYPAL_ENV` | Blueprint selects sandbox. |
+| Gateway and intel | `PAYPAL_CLIENT_ID` | Enter the sandbox application's client ID. |
+| Gateway and intel | `PAYPAL_CLIENT_SECRET` | Enter the sandbox application's client secret. |
 | Gateway and intelligence | `PORT` | Render supplies the listening port, which defaults to `10000`. |
-| Intelligence | `LLM_API_KEY` | Enter Atul's provider API key. |
+| Intelligence | `ANTHROPIC_API_KEY` | Enter Atul's provider API key. |
+| Intel | `PAYPAL_WEBHOOK_ID` | Sandbox webhook registration ID for the intel service. |
+| Gateway and intel | `INTEL_API_TOKEN` | Generated on the gateway and shared with intel. |
+| Gateway and intel | `INTERNAL_LEDGER_TOKEN`, `LEDGER_TOKEN`, `LEDGER_URL` | Render shares the gateway hook token and internal address with intel. |
 | Dashboard | `VITE_GATEWAY_URL` | Render resolves this at build time from the gateway's public `RENDER_EXTERNAL_URL`. |
 | Dashboard | `VITE_PAYPAL_CLIENT_ID` | Blueprint copies the public sandbox application client ID from the gateway. |
 | Dashboard | `VITE_USE_STUB` | Blueprint sets false for the live sandbox. Set true on a standalone preview static site. |

@@ -42,3 +42,9 @@ Send each event envelope in an SSE data frame with an id field equal to the enve
 ## Stretch notification handoff (Vivek)
 
 When the gateway can record step-up decisions durably, use a server-side notification hook after the decision commits. Keep the Zapier URL in server configuration. Deduplicate delivery by audit event ID, retry separately from payment processing, and send only the review identifiers and fields needed by the notification. Confirm delivery against an authorized test Zap before listing it as an integration.
+
+## Merged gateway integration blockers
+
+- The gateway lacks the dashboard mandate list, create, buyer-order, and demo-trigger routes.
+- Live reviews require authenticated access and a single-use approval token. Keep server bearer credentials out of browser configuration. Remove step_up_token from public ledger and SSE responses before public deployment. Dashboard redaction does not protect the underlying HTTP response.
+- The dashboard reads payment history from GET /v1/payments/:id and backfills from GET /v1/ledger/events. It consumes named SSE frames and maps created_at and data to the display envelope.

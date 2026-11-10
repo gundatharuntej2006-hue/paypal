@@ -1,6 +1,7 @@
+import { normalizeGatewayEvent, normalizeGatewayEvents } from './events';
 import { loadBenchmarkReport } from '../benchmark/report';
 import type { MandateDraft } from '../lib/mandate';
-import type { EventEnvelope, Mandate } from '../contracts/types';
+import type { Mandate } from '../contracts/types';
 import type { ApprovalPayment, DemoScenario, Payment } from './models';
 import { stub } from './stub';
 
@@ -50,6 +51,32 @@ async function runDemoScenario(scenario: DemoScenario, mandateId?: string) {
   if (!response.ok) throw new GatewayError(response.status);
 }
 
+const namedEvents = [
+  'intent.received',
+  'mandate.verified',
+  'mandate.failed',
+  'scan.completed',
+  'judge.completed',
+  'risk.scored',
+  'decision.made',
+  'human.approved',
+  'human.rejected',
+  'paypal.order_created',
+  'paypal.authorized',
+  'paypal.captured',
+  'paypal.voided',
+  'paypal.refunded',
+  'webhook.received',
+  'reconciliation.mismatch',
+  'reconciliation.completed',
+  'payout.created',
+  'payout.updated',
+  'invoice.paid',
+  'payment.step_up_token_issued',
+  'payment.step_up_token_consumed',
+  'paypal.capture_failed',
+];
+
 const live: typeof stub = {
   runDemoScenario,
   listMandates: () => request<Mandate[]>('/mandates'),
@@ -61,8 +88,18 @@ const live: typeof stub = {
     { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(draft) },
   ),
   listPayments: () => request<Payment[]>('/payments'),
-  getPaymentEvents: (id) => request<EventEnvelope[]>('/payments/' + encodeURIComponent(id) + '/events'),
-  listApprovals: () => request<ApprovalPayment[]>('/approvals'),
+  async getPaymentEvents(id) {
+    const result = await request<{ timeline: unknown }>('/payments/' + encodeURIComponent(id));
+    return normalizeGatewayEvents(result.timeline);
+  },
+  async listApprovals() {
+    try {
+      return await request<ApprovalPayment[]>('/approvals');
+    } catch (error) {
+      if (error instanceof GatewayError && error.status === 404) return [];
+      throw error;
+    }
+  },
   approve: (id, orderId) => review(id, 'approve', orderId),
   reject: (id, reason) => review(id, 'reject', reason),
   subscribeEvents(onEvent, paymentId, onConnection) {
@@ -72,15 +109,17 @@ const live: typeof stub = {
     const source = new EventSource(gateway + '/v1/events' + query);
     source.onopen = () => onConnection?.(true);
     source.onerror = () => onConnection?.(false);
-    source.onmessage = (message) => {
-      let event: EventEnvelope;
+    const receive = (message: MessageEvent<string>) => {
+      let event: ReturnType<typeof normalizeGatewayEvent>;
       try {
-        event = JSON.parse(message.data);
+        event = normalizeGatewayEvent(JSON.parse(message.data));
       } catch {
         return;
       }
       if (event?.id && (!paymentId || event.payment_id === paymentId)) onEvent(event);
     };
+    source.onmessage = receive;
+    for (const name of namedEvents) source.addEventListener(name, receive);
     return () => source.close();
   },
 };
@@ -90,6 +129,7 @@ const benchmarkSource = benchmarkMode === 'static' || benchmarkMode === 'gateway
 
 export const client = {
   ...(useStub ? stub : live),
+  getLedgerEvents: async () => useStub ? [] : normalizeGatewayEvents(await request<unknown>('/ledger/events')),
   getBenchmarkReport: () => loadBenchmarkReport({
     source: benchmarkSource,
     staticUrl: import.meta.env.VITE_BENCHMARK_REPORT_URL || '/benchmark-report.json',

@@ -32,6 +32,11 @@ const eventStyles: Record<string, [string, string, Tone]> = {
   'webhook.received': ['Webhook received', '↻', 'neutral'],
   'human.approved': ['Human approved', '✓', 'allow'],
   'human.rejected': ['Human rejected', '×', 'block'],
+  'reconciliation.completed': ['Reconciliation completed', '✓', 'neutral'],
+  'payout.created': ['PayPal payout created', 'P', 'neutral'],
+  'payout.updated': ['PayPal payout updated', 'P', 'neutral'],
+  'invoice.paid': ['PayPal invoice marked paid', 'P', 'allow'],
+  'paypal.capture_failed': ['PayPal capture failed', '!', 'block'],
   'reconciliation.mismatch': ['Reconciliation mismatch', '!', 'block'],
 };
 

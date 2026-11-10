@@ -108,6 +108,15 @@ function Workspace() {
   const [connected, setConnected] = useState(false);
   const [ledgerEvents, setLedgerEvents] = useState<EventEnvelope[]>([]);
   const inbox = useApprovalInbox(ledgerEvents, connected);
+  useEffect(() => {
+    if (!connected) return;
+    let active = true;
+    void client.getLedgerEvents().then((history) => {
+      if (active && history.length) setLedgerEvents((current) => [...history].reverse().reduce(appendEvent, current));
+    }).catch(() => { /* The live stream can still deliver events. */ });
+    return () => { active = false; };
+  }, [connected]);
+
   useEffect(() => client.subscribeEvents((event) => {
     setLedgerEvents((current) => appendEvent(current, event));
   }, undefined, setConnected), []);
