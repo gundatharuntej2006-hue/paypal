@@ -263,6 +263,8 @@ class DecisionResponse:
             raise ValidationError("decision response must be an object")
         for key in ("payment_id", "audit_event_id"):
             string(data.get(key), key)
+        if not data["audit_event_id"].strip():
+            raise ValidationError("audit_event_id must be a nonempty audit reference")
         if data.get("decision") not in ("allow", "step_up", "block"):
             raise ValidationError("invalid decision enum")
         score = data.get("risk_score")
