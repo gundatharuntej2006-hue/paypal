@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -46,7 +47,28 @@ func main() {
 	// 2. Initialize Mandate Verifier, Nonce Store & Principal Registry (Fix 2)
 	nonceStore := mandate.NewMemoryNonceStore()
 	principalRegistry := mandate.NewMemoryPrincipalRegistry()
-	// In dev mode, lenient registry allows self-registration or seeded keys
+
+	// Pre-register bootstrap principals from environment configuration
+	if cfg.BootstrapPrincipals != "" {
+		pairs := strings.Split(cfg.BootstrapPrincipals, ",")
+		for _, pair := range pairs {
+			parts := strings.Split(strings.TrimSpace(pair), ":")
+			if len(parts) == 2 && parts[0] != "" && parts[1] != "" {
+				principalRegistry.RegisterPrincipal(parts[0], parts[1])
+				log.Printf("[gateway] 🔑 pre-registered bootstrap principal '%s'", parts[0])
+			}
+		}
+	}
+	if cfg.TestPrincipalID != "" && cfg.TestPrincipalPublicKey != "" {
+		principalRegistry.RegisterPrincipal(cfg.TestPrincipalID, cfg.TestPrincipalPublicKey)
+		log.Printf("[gateway] 🔑 pre-registered test principal '%s'", cfg.TestPrincipalID)
+	}
+	// In development/dry-run mode, also pre-seed standard test vector principals
+	if cfg.Env != "production" {
+		principalRegistry.RegisterPrincipal("principal_cross_lang", "ebVWLo/mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ=")
+		principalRegistry.RegisterPrincipal("user_vivek", "+QrsGHy80RVVR5btBnZ26hkL+aJ9ZbqWJVAffz7v5gE=")
+	}
+
 	verifier := mandate.NewVerifier(nonceStore, led, principalRegistry)
 	verifier.SetStrictRegistry(cfg.Env == "production")
 

@@ -16,6 +16,42 @@ func main() {
 	flag.Parse()
 
 	switch *mode {
+	case "vector":
+		priv := "AQIDBAUGBwgJCgsMDQ4PEBESExQVFhcYGRobHB0eHyB5tVYuj+ZU+UB4sRLoqYunkB+FOuaVvtfg45ELrQSWZA=="
+		pub := "ebVWLo/mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ="
+
+		validFrom, _ := time.Parse(time.RFC3339, "2026-11-11T00:00:00Z")
+		expiresAt, _ := time.Parse(time.RFC3339, "2026-11-20T00:00:00Z")
+
+		mandate := models.Mandate{
+			MandateID:         "mdt_test_clean_001",
+			PrincipalID:       "principal_cross_lang",
+			AgentID:           "agent_shopper_lang",
+			Task:              "Procure test equipment under policy",
+			Currency:          "USD",
+			MaxTotal:          "250.00",
+			MaxPerTxn:         "100.00",
+			StepUpOver:        "50.00",
+			AllowedMerchants:  []string{"merchant_a", "merchant_staples"},
+			AllowedCategories: []string{"books", "electronics", "office_supplies"},
+			ValidFrom:         validFrom,
+			ExpiresAt:         expiresAt,
+			Nonce:             "nonce_bench_fresh_001",
+			PublicKey:         pub,
+		}
+
+		err := crypto.SignMandate(priv, &mandate)
+		if err != nil {
+			log.Fatalf("failed to sign vector mandate: %v", err)
+		}
+
+		canonicalJSON, _ := crypto.CanonicalMandateBytes(&mandate)
+		out, _ := json.MarshalIndent(mandate, "", "  ")
+		fmt.Println("📋 Generated Fresh Signed Test Mandate:")
+		fmt.Println(string(out))
+		fmt.Printf("\nCanonical JSON: %s\n", string(canonicalJSON))
+		fmt.Printf("Signature (Base64): %s\n", mandate.Signature)
+
 	case "generate":
 		pub, priv, err := crypto.GenerateKeyPair()
 		if err != nil {

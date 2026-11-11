@@ -27,6 +27,11 @@ type Config struct {
 	PayPalClientID     string
 	PayPalClientSecret string
 	PayPalMockMode     bool
+
+	// Pre-registered Principals for secure bootstrap/test execution
+	BootstrapPrincipals    string
+	TestPrincipalID        string
+	TestPrincipalPublicKey string
 }
 
 func Load() *Config {
@@ -92,10 +97,14 @@ func Load() *Config {
 		RiskBlockThreshold:  blockThresh,
 		RiskStepUpThreshold: stepUpThresh,
 		GatewayMode:         gatewayMode,
-		PayPalEnv:          getEnv("PAYPAL_ENV", "sandbox"),
-		PayPalClientID:     clientID,
-		PayPalClientSecret: clientSecret,
-		PayPalMockMode:     mockMode,
+		PayPalEnv:           getEnv("PAYPAL_ENV", "sandbox"),
+		PayPalClientID:      clientID,
+		PayPalClientSecret:  clientSecret,
+		PayPalMockMode:      mockMode,
+
+		BootstrapPrincipals:    os.Getenv("BOOTSTRAP_PRINCIPALS"),
+		TestPrincipalID:        os.Getenv("TEST_PRINCIPAL_ID"),
+		TestPrincipalPublicKey: os.Getenv("TEST_PRINCIPAL_PUBLIC_KEY"),
 	}
 }
 
