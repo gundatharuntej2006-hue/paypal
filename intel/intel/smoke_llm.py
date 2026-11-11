@@ -57,7 +57,8 @@ async def main(rounds: int, rpm: int = 0) -> int:
     unknown = sum(r.verdict == "unknown" for s, j, _ in rows for r in (s, j))
     expected = sum(s.verdict == "clean" and j.verdict == "aligned" for s, j, _ in rows)
     print(f"\n{2 * rounds} calls: {unknown} unknown. Combined latency p50 {statistics.median(combined):.0f} ms, "
-          f"max {combined[-1]} ms (budget 3000 ms).")
+          f"max {combined[-1]} ms (deadline {settings.deadline_s * 1000:.0f} ms; "
+          f"the gateway's INTEL_TIMEOUT_MS must be higher).")
     print(f"Expected answers (scan clean, judge aligned): {expected}/{rounds} rounds.")
     return 0
 

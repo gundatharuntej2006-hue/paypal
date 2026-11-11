@@ -10,6 +10,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 from functools import lru_cache
 from pathlib import Path
 from typing import Any, TypeVar
@@ -37,6 +38,19 @@ class _Retry(LLMUnavailable):
     """A failure worth one more try (malformed or truncated output)."""
 
 
+class _NextModel(LLMUnavailable):
+    """This model can't answer for a while (rate limit, outage, unknown model): rest it and try the next one."""
+
+    def __init__(self, reason: str, rest_s: float) -> None:
+        super().__init__(reason)
+        self.rest_s = rest_s
+
+
+def _chain(models: str) -> list[str]:
+    """INTEL_SCAN_MODEL / INTEL_JUDGE_MODEL may list several models, comma-separated, best first."""
+    return [m.strip() for m in models.split(",") if m.strip()]
+
+
 class LLMClient:
     def __init__(
         self,
@@ -54,6 +68,7 @@ class LLMClient:
         self._timeout_s = timeout_s
         self._http: httpx.AsyncClient | None = None
         self._http_loop: asyncio.AbstractEventLoop | None = None
+        self._resting: dict[str, float] = {}  # model -> time.monotonic() when it may be tried again
         if provider == "gemini":
             self._client = client  # an httpx.AsyncClient in tests; otherwise made per event loop
             self._ready = api_key is not None
@@ -67,6 +82,24 @@ class LLMClient:
     async def structured(self, *, model: str, system: str, user: str, output: type[T], max_tokens: int = 1024) -> T:
         if not self._ready:
             raise LLMUnavailable("no_llm_key")
+        now = time.monotonic()
+        ready = [m for m in _chain(model) if self._resting.get(m, 0.0) <= now]
+        if not ready:  # every model is resting: answer at once instead of spending the deadline
+            raise LLMUnavailable("llm_rate_limited")
+        reason = "llm_rate_limited"
+        for name in ready:
+            try:
+                result = await self._ask(name, system, user, output, max_tokens)
+            except _NextModel as busy:
+                self._resting[name] = time.monotonic() + busy.rest_s
+                log.warning("model %s unavailable (%s), resting it %.0fs", name, busy.reason, busy.rest_s)
+                reason = busy.reason
+                continue
+            log.info("answered by %s", name)
+            return result
+        raise LLMUnavailable(reason)
+
+    async def _ask(self, model: str, system: str, user: str, output: type[T], max_tokens: int) -> T:
         call = self._gemini if self.provider == "gemini" else self._anthropic
         failure = "llm_invalid_output"
         for _ in range(2):  # one retry for malformed or truncated output
@@ -94,8 +127,10 @@ class LLMClient:
         except anthropic.APIConnectionError:
             raise LLMUnavailable("llm_connection_error") from None
         except anthropic.RateLimitError:
-            raise LLMUnavailable("llm_rate_limited") from None
+            raise _NextModel("llm_rate_limited", 30) from None
         except anthropic.APIStatusError as error:
+            if error.status_code >= 500:
+                raise _NextModel(f"llm_http_{error.status_code}", 30) from None
             raise LLMUnavailable(f"llm_http_{error.status_code}") from None
         except ValueError:  # JSON or schema validation failed
             raise _Retry("llm_invalid_output") from None
@@ -129,10 +164,14 @@ class LLMClient:
         except httpx.HTTPError:
             raise LLMUnavailable("llm_connection_error") from None
         if resp.status_code == 429:
-            raise LLMUnavailable("llm_rate_limited")
+            raise _NextModel("llm_rate_limited", _gemini_retry_s(resp))
         if resp.status_code != 200:
-            log.warning("gemini HTTP %s: %s", resp.status_code, resp.text[:300])
-            raise LLMUnavailable(f"llm_http_{resp.status_code}")
+            log.warning("gemini %s HTTP %s: %s", model, resp.status_code, resp.text[:300])
+            if resp.status_code in (400, 404):  # this model rejects the request or doesn't exist
+                raise _NextModel(f"llm_http_{resp.status_code}", 3600)
+            if resp.status_code >= 500:
+                raise _NextModel(f"llm_http_{resp.status_code}", 30)
+            raise LLMUnavailable(f"llm_http_{resp.status_code}")  # 401/403: the key, same for every model
         try:
             candidates = resp.json().get("candidates") or []
         except ValueError:
@@ -158,6 +197,24 @@ class LLMClient:
         if self._http is None or self._http_loop is not loop:
             self._http, self._http_loop = httpx.AsyncClient(timeout=self._timeout_s), loop
         return self._http
+
+
+def _gemini_retry_s(resp: httpx.Response) -> float:
+    """How long Google says to wait: seconds for a per-minute limit, hours once the daily quota is gone."""
+    try:
+        details = resp.json()["error"].get("details", [])
+    except (ValueError, KeyError, AttributeError):
+        return 30.0
+    quotas = [v.get("quotaId", "") for d in details for v in d.get("violations", [])]
+    log.warning("gemini quota hit: %s", ", ".join(quotas) or "unspecified")
+    for detail in details:
+        delay = str(detail.get("retryDelay", ""))
+        if delay.endswith("s"):
+            try:
+                return max(1.0, min(float(delay[:-1]), 86400.0))
+            except ValueError:
+                pass
+    return 30.0
 
 
 def _strip_fences(text: str) -> str:

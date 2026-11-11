@@ -36,7 +36,15 @@ class Settings:
         return self.gemini_api_key if self.llm_provider == "gemini" else self.anthropic_api_key
 
 
-DEFAULT_MODELS = {"anthropic": "claude-haiku-5-5", "gemini": "gemini-2.5-flash-lite"}
+# Gemini's free tier allows about 20 requests a day per model, so the default is a chain of fast
+# models: when one runs out, the next one answers.
+DEFAULT_MODELS = {
+    "anthropic": "claude-haiku-5-5",
+    "gemini": "gemini-2.5-flash-lite,gemini-2.5-flash,gemini-3.5-flash-lite",  # fastest first
+}
+# Free-tier Gemini measured 1.4-1.7s warm and up to 4.3s on a first call (2026-11-12), so it gets
+# a longer deadline. The gateway's INTEL_TIMEOUT_MS must be above it (7000 for Gemini).
+DEFAULT_DEADLINE_S = {"anthropic": "2.5", "gemini": "6"}
 
 
 def _choice(name: str, default: str, allowed: tuple[str, ...]) -> str:
@@ -81,7 +89,7 @@ def get_settings() -> Settings:
         judge_model=env("INTEL_JUDGE_MODEL") or DEFAULT_MODELS[provider],
         llm_provider=provider,  # type: ignore[arg-type]
         gemini_api_key=gemini_key,
-        deadline_s=float(env("INTEL_DEADLINE_S", "2.5")),
+        deadline_s=float(env("INTEL_DEADLINE_S") or DEFAULT_DEADLINE_S[provider]),
         paypal_env=_choice("PAYPAL_ENV", "sandbox", ("sandbox", "live")),  # type: ignore[arg-type]
         paypal_client_id=env("PAYPAL_CLIENT_ID") or None,
         paypal_client_secret=env("PAYPAL_CLIENT_SECRET") or None,
