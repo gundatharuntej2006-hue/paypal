@@ -33,8 +33,8 @@ On a fresh machine, install first: `pip install -e ".[dev]"`
 | `INTEL_API_TOKEN` | none | When set, callers must send it in the `X-Internal-Token` header |
 | `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` | none | LLM key. Without one, the LLM-based signals return `unknown` |
 | `LLM_PROVIDER` | `gemini` if only `GEMINI_API_KEY` is set, else `anthropic` | Which LLM serves scan and judge |
-| `INTEL_SCAN_MODEL`, `INTEL_JUDGE_MODEL` | Gemini: `gemini-3.5-flash-lite,gemini-2.5-flash-lite,gemini-2.5-flash`; Anthropic: `claude-haiku-5-5` | Model for each signal. A comma-separated list is a fallback chain: a model that hits its rate limit (or is down) rests until Google says it can be retried, and the next one answers |
-| `INTEL_DEADLINE_S` | `2.5` | Hard deadline per signal. A signal that runs over returns `unknown` |
+| `INTEL_SCAN_MODEL`, `INTEL_JUDGE_MODEL` | Gemini: `gemini-2.5-flash-lite,gemini-2.5-flash,gemini-3.5-flash-lite` (fastest first); Anthropic: `claude-haiku-5-5` | Model for each signal. A comma-separated list is a fallback chain: a model that hits its rate limit (or is down) rests until Google says it can be retried, and the next one answers |
+| `INTEL_DEADLINE_S` | `6` with Gemini, `2.5` with Anthropic | Hard deadline per signal. A signal that runs over returns `unknown`. Free-tier Gemini took 1.4-1.7s warm and up to 4.3s on a first call, so with Gemini set the gateway's `INTEL_TIMEOUT_MS` to `7000` |
 | `INTEL_LOCAL_UTC_OFFSET_MIN` | `330` (IST) | Time zone the risk scorer uses for its "unusual time" check |
 | `PAYPAL_ENV` | `sandbox` | `sandbox` or `live` |
 | `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET` | none | Sandbox app credentials (needed for postback verification) |

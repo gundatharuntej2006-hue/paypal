@@ -282,7 +282,7 @@ def test_chain_stops_on_a_bad_key():
     assert error.value.reason == "llm_http_401" and called == ["a"]
 
 
-GEMINI_DEFAULT = "gemini-3.5-flash-lite,gemini-2.5-flash-lite,gemini-2.5-flash"
+GEMINI_DEFAULT = "gemini-2.5-flash-lite,gemini-2.5-flash,gemini-3.5-flash-lite"
 
 
 @pytest.mark.parametrize("env,provider,model", [
@@ -292,7 +292,7 @@ GEMINI_DEFAULT = "gemini-3.5-flash-lite,gemini-2.5-flash-lite,gemini-2.5-flash"
     ({"GEMINI_API_KEY": "g", "INTEL_SCAN_MODEL": "gemini-x"}, "gemini", "gemini-x"),
 ])
 def test_provider_follows_the_key(monkeypatch, env, provider, model):
-    for name in ("GEMINI_API_KEY", "ANTHROPIC_API_KEY", "LLM_PROVIDER", "INTEL_SCAN_MODEL"):
+    for name in ("GEMINI_API_KEY", "ANTHROPIC_API_KEY", "LLM_PROVIDER", "INTEL_SCAN_MODEL", "INTEL_DEADLINE_S"):
         monkeypatch.delenv(name, raising=False)
     for name, value in env.items():
         monkeypatch.setenv(name, value)
@@ -300,5 +300,6 @@ def test_provider_follows_the_key(monkeypatch, env, provider, model):
     try:
         settings = get_settings()
         assert (settings.llm_provider, settings.scan_model, settings.llm_key is not None) == (provider, model, True)
+        assert settings.deadline_s == (6.0 if provider == "gemini" else 2.5)
     finally:
         get_settings.cache_clear()
