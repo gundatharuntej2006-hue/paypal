@@ -36,7 +36,12 @@ class Settings:
         return self.gemini_api_key if self.llm_provider == "gemini" else self.anthropic_api_key
 
 
-DEFAULT_MODELS = {"anthropic": "claude-haiku-5-5", "gemini": "gemini-2.5-flash-lite"}
+# Gemini's free tier allows about 20 requests a day per model, so the default is a chain of fast
+# models: when one runs out, the next one answers.
+DEFAULT_MODELS = {
+    "anthropic": "claude-haiku-5-5",
+    "gemini": "gemini-3.5-flash-lite,gemini-2.5-flash-lite,gemini-2.5-flash",
+}
 
 
 def _choice(name: str, default: str, allowed: tuple[str, ...]) -> str:

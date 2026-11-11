@@ -234,10 +234,61 @@ def test_gemini_failure_reasons():
     assert gemini_reason(no_key) == "no_llm_key"
 
 
+def by_model(replies):
+    """A Gemini client whose fake server answers per model; returns it and the list of models called."""
+    called = []
+
+    def handle(request):
+        model = request.url.path.rsplit("/", 1)[-1].split(":")[0]
+        called.append(model)
+        reply = replies[model]
+        return reply if isinstance(reply, httpx.Response) else httpx.Response(200, json=reply)
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+    return llm.LLMClient(api_key="k", scan_model="m", judge_model="m", timeout_s=1, client=http, provider="gemini"), called
+
+
+DAILY_QUOTA_GONE = httpx.Response(429, json={"error": {"code": 429, "details": [
+    {"@type": "type.googleapis.com/google.rpc.QuotaFailure",
+     "violations": [{"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier", "quotaValue": "20"}]},
+    {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "48029s"},
+]}})
+
+
+def ask_chain(client, chain="a,b"):
+    return asyncio.run(client.structured(model=chain, system="s", user="u", output=Answer))
+
+
+def test_chain_moves_on_when_a_model_is_out_of_quota_and_rests_it():
+    client, called = by_model({"a": DAILY_QUOTA_GONE, "b": gemini_reply('{"ok": true}')})
+    assert ask_chain(client).ok and called == ["a", "b"]
+    assert ask_chain(client).ok and called == ["a", "b", "b"]  # "a" is skipped until Google's reset
+
+
+def test_chain_answers_at_once_when_every_model_is_resting():
+    client, called = by_model({"a": DAILY_QUOTA_GONE, "b": httpx.Response(503, json={})})
+    with pytest.raises(llm.LLMUnavailable) as first:
+        ask_chain(client)
+    assert first.value.reason == "llm_http_503" and called == ["a", "b"]
+    with pytest.raises(llm.LLMUnavailable) as second:
+        ask_chain(client)
+    assert second.value.reason == "llm_rate_limited" and called == ["a", "b"]  # no new requests
+
+
+def test_chain_stops_on_a_bad_key():
+    client, called = by_model({"a": httpx.Response(401, json={}), "b": gemini_reply('{"ok": true}')})
+    with pytest.raises(llm.LLMUnavailable) as error:
+        ask_chain(client)
+    assert error.value.reason == "llm_http_401" and called == ["a"]
+
+
+GEMINI_DEFAULT = "gemini-3.5-flash-lite,gemini-2.5-flash-lite,gemini-2.5-flash"
+
+
 @pytest.mark.parametrize("env,provider,model", [
-    ({"GEMINI_API_KEY": "g"}, "gemini", "gemini-2.5-flash-lite"),
+    ({"GEMINI_API_KEY": "g"}, "gemini", GEMINI_DEFAULT),
     ({"ANTHROPIC_API_KEY": "a"}, "anthropic", "claude-haiku-5-5"),
-    ({"ANTHROPIC_API_KEY": "a", "GEMINI_API_KEY": "g", "LLM_PROVIDER": "gemini"}, "gemini", "gemini-2.5-flash-lite"),
+    ({"ANTHROPIC_API_KEY": "a", "GEMINI_API_KEY": "g", "LLM_PROVIDER": "gemini"}, "gemini", GEMINI_DEFAULT),
     ({"GEMINI_API_KEY": "g", "INTEL_SCAN_MODEL": "gemini-x"}, "gemini", "gemini-x"),
 ])
 def test_provider_follows_the_key(monkeypatch, env, provider, model):
