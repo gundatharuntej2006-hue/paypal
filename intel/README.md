@@ -18,7 +18,11 @@ On a fresh machine, install first: `pip install -e ".[dev]"`
 ## Getting access (for judges and teammates)
 
 - **No keys at all:** set `INTEL_MODE=stub`. Every endpoint answers with input-aware canned results (see "Stub triggers" below), which is enough to run the whole system end to end.
-- **Anthropic API key** (for the LLM part of scan and judge): create one at https://console.anthropic.com and set `ANTHROPIC_API_KEY`. Without it the service still runs: clear injections are caught by the rules, risk scoring works fully, and everything the LLM would decide comes back `unknown`, so the gateway steps up instead of allowing.
+- **LLM key** (for the LLM part of scan and judge), either one:
+  - **Google Gemini, free tier:** create a key at https://aistudio.google.com/apikey and set `GEMINI_API_KEY`. The free tier has per-minute and per-day limits (shown in AI Studio); a request over the limit comes back `unknown` (`llm_rate_limited`), so the gateway steps up. Run test scripts with `--rpm` to stay under it.
+  - **Anthropic:** create a key at https://console.anthropic.com and set `ANTHROPIC_API_KEY`.
+
+  Without a key the service still runs: clear injections are caught by the rules, risk scoring works fully, and everything the LLM would decide comes back `unknown`, so the gateway steps up instead of allowing.
 - **PayPal sandbox** (for webhooks, reconciliation, payouts, invoices): create a free app at https://developer.paypal.com, then set `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET` and `PAYPAL_WEBHOOK_ID`. Tick **Transaction Search**, **Payouts** and **Invoicing** under the app's features.
 
 ## Settings (environment variables)
@@ -27,8 +31,9 @@ On a fresh machine, install first: `pip install -e ".[dev]"`
 |---|---|---|
 | `INTEL_MODE` | `live` | `stub` returns canned answers that react to the input, for integration |
 | `INTEL_API_TOKEN` | none | When set, callers must send it in the `X-Internal-Token` header |
-| `ANTHROPIC_API_KEY` | none | LLM key. Without it, the LLM-based signals return `unknown` |
-| `INTEL_SCAN_MODEL`, `INTEL_JUDGE_MODEL` | `claude-haiku-5-5` | Model for each signal |
+| `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` | none | LLM key. Without one, the LLM-based signals return `unknown` |
+| `LLM_PROVIDER` | `gemini` if only `GEMINI_API_KEY` is set, else `anthropic` | Which LLM serves scan and judge |
+| `INTEL_SCAN_MODEL`, `INTEL_JUDGE_MODEL` | `gemini-2.5-flash-lite` or `claude-haiku-5-5` (by provider) | Model for each signal |
 | `INTEL_DEADLINE_S` | `2.5` | Hard deadline per signal. A signal that runs over returns `unknown` |
 | `INTEL_LOCAL_UTC_OFFSET_MIN` | `330` (IST) | Time zone the risk scorer uses for its "unusual time" check |
 | `PAYPAL_ENV` | `sandbox` | `sandbox` or `live` |
@@ -78,9 +83,9 @@ Golden cases live in `intel/golden/<endpoint>.json`. `intel/golden/<endpoint>.ws
 - **risk:** weighted rules with no LLM, so it works without an API key.
 - **scan:** clear injections are caught by fast rules (`stage: heuristic`). Everything else goes to one batched LLM call (`stage: llm`). Results are cached by content.
 - **judge:** one LLM call with few-shot examples. Prompts are in `intel/prompts/`, and their version is returned in `version`.
-- **Without `ANTHROPIC_API_KEY`:** scan and judge return `unknown` with `reason: no_llm_key` straight away, except clear injections, which the rules still catch.
+- **Without an LLM key:** scan and judge return `unknown` with `reason: no_llm_key` straight away, except clear injections, which the rules still catch.
 
-Live check (needs the key): `py -m intel.smoke_llm 20` runs 20 rounds of scan + judge in parallel and prints verdicts and latency.
+Live check (needs a key): `py -m intel.smoke_llm 20` runs 20 rounds of scan + judge in parallel and prints verdicts and latency. On the Gemini free tier, add `--rpm 10` (and use `py -m intel.eval --rpm 10`) to stay under the per-minute limit.
 
 ## Stub triggers (`INTEL_MODE=stub`)
 
