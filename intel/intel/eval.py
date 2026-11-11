@@ -5,6 +5,7 @@ Run from the intel/ folder:
     py -m intel.eval scan judge       # some endpoints
     py -m intel.eval --misses         # also list the cases it got wrong
     py -m intel.eval --json out.json  # save every result
+    py -m intel.eval --rpm 10         # free LLM tier: at most 10 LLM requests a minute
 
 Golden files are intel/golden/<endpoint>.json:
     {"defaults": {...merged into every request...},
@@ -20,6 +21,7 @@ import asyncio
 import json
 import statistics
 import sys
+import time
 from collections import defaultdict
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -32,7 +34,7 @@ from intel.main import run_signal
 from intel.models import JudgeRequest, JudgeResponse, RiskRequest, RiskResponse, ScanRequest, ScanResponse
 
 GOLDEN_DIR = Path(__file__).parent / "golden"
-RISK_LINE = 0.5  # score at which the gateway should at least step up
+RISK_LINE = 0.35  # the gateway's step-up line (RISK_THRESHOLD_STEPUP)
 
 
 @dataclass(frozen=True)
@@ -54,21 +56,45 @@ ENDPOINTS = {
 
 
 def load_cases(name: str) -> list[dict[str, Any]]:
-    data = json.loads((GOLDEN_DIR / f"{name}.json").read_text(encoding="utf-8"))
-    defaults = data.get("defaults", {})
-    return [{**case, "request": {**defaults, **case["request"]}} for case in data["cases"]]
+    """Cases from <name>.json plus any extra sets such as <name>.wsc.json (Tharun's library)."""
+    cases = []
+    for path in [GOLDEN_DIR / f"{name}.json", *sorted(GOLDEN_DIR.glob(f"{name}.*.json"))]:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        defaults = data.get("defaults", {})
+        cases += [{**case, "request": {**defaults, **case["request"]}} for case in data["cases"]]
+    return cases
 
 
-async def evaluate(name: str, concurrency: int = 4, deadline_s: float | None = None) -> list[dict[str, Any]]:
+class _Pacer:
+    """Spaces calls out to stay under a requests-per-minute limit (free LLM tiers)."""
+
+    def __init__(self, rpm: int) -> None:
+        self.gap = 60 / rpm if rpm > 0 else 0.0
+        self.next = 0.0
+        self.lock = asyncio.Lock()
+
+    async def wait(self) -> None:
+        if not self.gap:
+            return
+        async with self.lock:
+            now = time.monotonic()
+            delay = max(0.0, self.next - now)
+            self.next = max(now, self.next) + self.gap
+        await asyncio.sleep(delay)
+
+
+async def evaluate(name: str, concurrency: int = 4, deadline_s: float | None = None, rpm: int = 0) -> list[dict[str, Any]]:
     endpoint = ENDPOINTS[name]
     deadline = deadline_s or get_settings().deadline_s
     gate = asyncio.Semaphore(concurrency)
+    pace = _Pacer(rpm if name != "risk" else 0)  # risk makes no LLM calls
     if name == "scan":
         scan._CACHE.clear()  # measure real latency
 
     async def one(case: dict[str, Any]) -> dict[str, Any]:
         request = endpoint.request_model.model_validate(case["request"])
         async with gate:
+            await pace.wait()
             out = await run_signal(endpoint.handler, request, endpoint.unknown, deadline)
         unknown = getattr(out, "verdict", None) == "unknown" or getattr(out, "status", None) == "unknown"
         return {"id": case["id"], "class": case["class"], "attack": case["attack"], "flagged": endpoint.flagged(out),
@@ -131,15 +157,22 @@ def main() -> int:
     parser.add_argument("--misses", action="store_true", help="list cases the endpoint got wrong")
     parser.add_argument("--json", type=Path, help="write every result to this file")
     parser.add_argument("--concurrency", type=int, default=4)
+    parser.add_argument("--rpm", type=int, default=0, help="stay under this many LLM requests per minute (free tiers)")
     args = parser.parse_args()
     if unknown_names := set(args.endpoints) - set(ENDPOINTS):
         parser.error(f"unknown endpoint(s): {', '.join(sorted(unknown_names))}")
 
     settings = get_settings()
-    key = "set" if settings.anthropic_api_key else "NOT SET (LLM cases will be unknown)"
-    print(f"models: scan {settings.scan_model}, judge {settings.judge_model}; API key {key}; risk line {RISK_LINE}\n")
+    key = "set" if settings.llm_key else "NOT SET (LLM cases will be unknown)"
+    print(f"{settings.llm_provider} models: scan {settings.scan_model}, judge {settings.judge_model}; "
+          f"API key {key}; risk line {RISK_LINE}\n")
     endpoints = args.endpoints or list(ENDPOINTS)
-    results = {name: asyncio.run(evaluate(name, args.concurrency)) for name in endpoints}
+
+    async def run_all() -> dict[str, list[dict[str, Any]]]:
+        # One event loop for everything: the LLM client's connections belong to the loop that made them.
+        return {name: await evaluate(name, args.concurrency, rpm=args.rpm) for name in endpoints}
+
+    results = asyncio.run(run_all())
     report(results, args.misses)
     if args.json:
         args.json.write_text(json.dumps(results, indent=2), encoding="utf-8")

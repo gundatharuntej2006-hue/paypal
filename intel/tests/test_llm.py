@@ -1,4 +1,5 @@
 import asyncio
+import json
 from types import SimpleNamespace
 
 import anthropic
@@ -7,6 +8,7 @@ import pytest
 from pydantic import BaseModel
 
 from intel import judge, llm, samples, scan
+from intel.config import get_settings
 from intel.models import JudgeRequest, ScanRequest
 
 
@@ -175,3 +177,77 @@ def test_wrapper_failure_reasons():
     assert reason_of(wrapper(SimpleNamespace(stop_reason="refusal", parsed_output=None))[0]) == "llm_refusal"
     assert reason_of(wrapper(anthropic.APITimeoutError(request=request))[0]) == "llm_timeout"
     assert reason_of(llm.LLMClient(api_key=None, scan_model="m", judge_model="m", timeout_s=1)) == "no_llm_key"
+
+
+# --- Gemini (plain HTTP) ---
+
+def gemini_reply(text, finish="STOP"):
+    return {"candidates": [{"content": {"parts": [{"text": text}]}, "finishReason": finish}]}
+
+
+def gemini(*replies):
+    seen = []
+
+    def handle(request):
+        seen.append(request)
+        reply = replies[len(seen) - 1]
+        return reply if isinstance(reply, httpx.Response) else httpx.Response(200, json=reply)
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+    client = llm.LLMClient(api_key="k", scan_model="m", judge_model="m", timeout_s=1, client=http, provider="gemini")
+    return client, seen
+
+
+def ask_gemini(client):
+    return asyncio.run(client.structured(model="gemini-2.5-flash-lite", system="s", user="u", output=Answer))
+
+
+def gemini_reason(client):
+    with pytest.raises(llm.LLMUnavailable) as error:
+        ask_gemini(client)
+    return error.value.reason
+
+
+def test_gemini_returns_parsed_output_and_keeps_key_out_of_url():
+    client, seen = gemini(gemini_reply('```json\n{"ok": true}\n```'))
+    assert ask_gemini(client).ok
+    request = seen[0]
+    body = json.loads(request.content)
+    assert request.headers["x-goog-api-key"] == "k" and "k" not in request.url.params
+    assert request.url.path.endswith("/models/gemini-2.5-flash-lite:generateContent")
+    assert body["generationConfig"]["thinkingConfig"] == {"thinkingBudget": 0}
+    assert '"ok"' in body["systemInstruction"]["parts"][0]["text"]  # schema is in the instructions
+
+
+def test_gemini_retries_malformed_output_once():
+    client, seen = gemini(gemini_reply("not json"), gemini_reply('{"ok": true}'))
+    assert ask_gemini(client).ok and len(seen) == 2
+
+
+def test_gemini_failure_reasons():
+    assert gemini_reason(gemini(httpx.Response(429, json={}))[0]) == "llm_rate_limited"
+    assert gemini_reason(gemini(httpx.Response(404, json={}))[0]) == "llm_http_404"
+    assert gemini_reason(gemini(gemini_reply("", finish="SAFETY"))[0]) == "llm_refusal"
+    assert gemini_reason(gemini({"promptFeedback": {"blockReason": "OTHER"}})[0]) == "llm_refusal"
+    assert gemini_reason(gemini(gemini_reply("{", "MAX_TOKENS"), gemini_reply("{", "MAX_TOKENS"))[0]) == "llm_truncated"
+    no_key = llm.LLMClient(api_key=None, scan_model="m", judge_model="m", timeout_s=1, provider="gemini")
+    assert gemini_reason(no_key) == "no_llm_key"
+
+
+@pytest.mark.parametrize("env,provider,model", [
+    ({"GEMINI_API_KEY": "g"}, "gemini", "gemini-2.5-flash-lite"),
+    ({"ANTHROPIC_API_KEY": "a"}, "anthropic", "claude-haiku-5-5"),
+    ({"ANTHROPIC_API_KEY": "a", "GEMINI_API_KEY": "g", "LLM_PROVIDER": "gemini"}, "gemini", "gemini-2.5-flash-lite"),
+    ({"GEMINI_API_KEY": "g", "INTEL_SCAN_MODEL": "gemini-x"}, "gemini", "gemini-x"),
+])
+def test_provider_follows_the_key(monkeypatch, env, provider, model):
+    for name in ("GEMINI_API_KEY", "ANTHROPIC_API_KEY", "LLM_PROVIDER", "INTEL_SCAN_MODEL"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    get_settings.cache_clear()
+    try:
+        settings = get_settings()
+        assert (settings.llm_provider, settings.scan_model, settings.llm_key is not None) == (provider, model, True)
+    finally:
+        get_settings.cache_clear()

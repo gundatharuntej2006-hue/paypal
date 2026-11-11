@@ -64,7 +64,8 @@ def health(settings: Settings = Depends(get_settings)) -> dict[str, Any]:
     return {
         "status": "ok",
         "mode": settings.mode,
-        "llm_configured": settings.anthropic_api_key is not None,
+        "llm_provider": settings.llm_provider,
+        "llm_configured": settings.llm_key is not None,
         "contract_version": CONTRACT_VERSION,
     }
 
