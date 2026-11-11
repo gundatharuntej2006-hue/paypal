@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 type Config struct {
 	Port                string
+	BindAddr            string
 	Env                 string
 	DBDriver            string
 	DatabaseURL         string
@@ -36,6 +38,7 @@ type Config struct {
 
 func Load() *Config {
 	port := getEnv("PORT", "8080")
+	bindAddr := os.Getenv("GATEWAY_BIND_ADDR")
 	env := getEnv("ENV", "development")
 	dbDriver := getEnv("DB_DRIVER", "memory")
 	dbURL := os.Getenv("DATABASE_URL")
@@ -85,6 +88,7 @@ func Load() *Config {
 
 	return &Config{
 		Port:                port,
+		BindAddr:            bindAddr,
 		Env:                 env,
 		DBDriver:            dbDriver,
 		DatabaseURL:         dbURL,
@@ -137,4 +141,19 @@ func getEnv(key, fallback string) string {
 		return fallback
 	}
 	return val
+}
+
+// ListenAddr returns the combined host:port string for binding HTTP listeners.
+// If BindAddr is configured (e.g. "127.0.0.1"), it produces "127.0.0.1:<Port>".
+// If BindAddr is empty, it returns ":<Port>" which binds across all available interfaces.
+func (c *Config) ListenAddr() string {
+	cleanPort := strings.TrimPrefix(strings.TrimSpace(c.Port), ":")
+	if cleanPort == "" {
+		cleanPort = "8080"
+	}
+	trimmedBind := strings.TrimSpace(c.BindAddr)
+	if trimmedBind != "" {
+		return net.JoinHostPort(trimmedBind, cleanPort)
+	}
+	return ":" + cleanPort
 }

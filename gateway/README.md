@@ -73,6 +73,8 @@ go run ./cmd/gateway/main.go
 ```
 
 By default, the gateway runs in development mode using the In-Memory ledger and Mock PayPal client on `http://localhost:8080`.
+Set `GATEWAY_BIND_ADDR=127.0.0.1` to enforce listening exclusively on the loopback interface (preventing external interface exposure).
+Set `TEST_PRINCIPAL_ID` and `TEST_PRINCIPAL_PUBLIC_KEY` (or `BOOTSTRAP_PRINCIPALS="id:key,..."`) to securely register principals at startup in any environment (including `ENV=production` with `GATEWAY_MODE=dryrun`).
 Set `DATABASE_URL` to connect to PostgreSQL, and `PAYPAL_CLIENT_ID` / `PAYPAL_CLIENT_SECRET` with `PAYPAL_MOCK_MODE=false` to use live PayPal Sandbox.
 
 ## CLI Tools
