@@ -141,7 +141,7 @@ Open the [local Benchmark dashboard](http://localhost:5173/benchmark) or inspect
 
 See the [Devpost tools inventory](docs/devpost/tools-list.md) for the implemented PayPal REST calls and verification status.
 
-Intel configures Claude Haiku 5.5 for injection classification and intent judging. Live-key verification and APIMatic usage remain pending.
+Intel supports Gemini and Claude Haiku 5.5 for injection classification and intent judging. The hosted Intel health check reported Gemini in live mode. An authenticated inference and APIMatic usage still need verification.
 
 ## Project structure
 

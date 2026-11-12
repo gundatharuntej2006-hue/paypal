@@ -5,6 +5,7 @@ This inventory reflects the implementation on `ritika`. It covers tools present 
 | Tool or API | How AgentGuard uses it |
 | --- | --- |
 | PayPal JavaScript SDK via `@paypal/paypal-js` | Loads PayPal Buttons for live buyer approval, requests or supplies a gateway order ID through `createOrder`, and handles the approved ID through `onApprove`. |
+| Google Gemini API | Supports structured injection classification and intent judging with a default fallback chain on rate limits and a six-second Intel deadline. Hosted health reported Gemini configured. |
 | Anthropic API, Claude Haiku 5.5 (`claude-haiku-5-5`) | Configured for structured injection classification after heuristic screening and for intent judging against the signed task. Live-key verification is pending. |
 | PayPal OAuth 2.0 | Gateway and intel obtain server-side access tokens. |
 | PayPal Webhooks | Intel verifies signatures, deduplicates event IDs, and forwards events to the ledger. |
