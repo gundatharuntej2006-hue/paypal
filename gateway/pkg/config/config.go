@@ -52,9 +52,9 @@ func Load() *Config {
 		intelURL = "http://" + intelURL
 	}
 
-	intelTimeoutMS, _ := strconv.Atoi(getEnv("INTEL_TIMEOUT_MS", "3000"))
+	intelTimeoutMS, _ := strconv.Atoi(getEnv("INTEL_TIMEOUT_MS", "7000"))
 	if intelTimeoutMS <= 0 {
-		intelTimeoutMS = 3000
+		intelTimeoutMS = 7000
 	}
 
 	blockThresh, err := strconv.ParseFloat(getEnv("RISK_THRESHOLD_BLOCK", "0.65"), 64)

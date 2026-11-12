@@ -27,7 +27,7 @@ services:
           name: agentguard-intel
           property: hostport
       - key: INTEL_TIMEOUT_MS
-        value: 3000
+        value: 7000
       - key: INTEL_API_TOKEN
         generateValue: true
       - key: AGENT_AUTH_TOKEN

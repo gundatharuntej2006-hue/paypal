@@ -1769,18 +1769,35 @@ func (s *Server) handleGetBenchmarkReport(w http.ResponseWriter, r *http.Request
 		"../contracts/test_vectors/benchmark-report.json",
 		"../../contracts/test_vectors/benchmark-report.json",
 		"../../../contracts/test_vectors/benchmark-report.json",
+		"workstream-c/fixtures/dashboard/synthetic.json",
+		"../workstream-c/fixtures/dashboard/synthetic.json",
+		"../../workstream-c/fixtures/dashboard/synthetic.json",
 	}
 
+	const maxReportBytes = 5 * 1024 * 1024 // 5 MiB bounded input
+
 	for _, p := range paths {
-		data, err := os.ReadFile(p)
+		f, err := os.Open(p)
 		if err != nil {
 			continue
 		}
-		if err := validateBenchmarkReport(data); err == nil {
-			data = bytes.TrimPrefix(data, []byte("\xef\xbb\xbf"))
+		// Read bounded input: limit reader prevents unbounded memory allocation if file grows
+		lr := io.LimitReader(f, maxReportBytes+2)
+		data, err := io.ReadAll(lr)
+		f.Close()
+		if err != nil || len(data) > maxReportBytes {
+			continue
+		}
+
+		proj, err := validateAndProjectBenchmarkReport(data)
+		if err == nil {
+			out, err := json.Marshal(proj)
+			if err != nil {
+				continue
+			}
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusOK)
-			w.Write(data)
+			w.Write(out)
 			return
 		}
 	}
@@ -1790,55 +1807,150 @@ func (s *Server) handleGetBenchmarkReport(w http.ResponseWriter, r *http.Request
 }
 
 func validateBenchmarkReport(data []byte) error {
-	// Enforce 5MB size limit
-	if len(data) > 5*1024*1024 {
-		return errors.New("report exceeds 5MB size limit")
+	_, err := validateAndProjectBenchmarkReport(data)
+	return err
+}
+
+func validateAndProjectBenchmarkReport(data []byte) (map[string]interface{}, error) {
+	const maxReportBytes = 5 * 1024 * 1024
+	if len(data) > maxReportBytes {
+		return nil, errors.New("report exceeds 5MB size limit")
 	}
 
 	data = bytes.TrimPrefix(data, []byte("\xef\xbb\xbf"))
 	var parsed map[string]interface{}
 	if err := json.Unmarshal(data, &parsed); err != nil {
-		return fmt.Errorf("invalid json: %w", err)
+		return nil, fmt.Errorf("invalid json: %w", err)
 	}
 
-	// Validate provenance
+	// 1. Validate Provenance (required)
 	prov, ok := parsed["provenance"].(string)
 	if !ok || (prov != "genuine" && prov != "synthetic" && prov != "unexecuted") {
-		return errors.New("invalid or missing provenance: must be 'genuine', 'synthetic', or 'unexecuted'")
+		return nil, errors.New("invalid or missing provenance: must be 'genuine', 'synthetic', or 'unexecuted'")
 	}
 
-	// Validate run_id
-	runID, ok := parsed["run_id"].(string)
-	if !ok || strings.TrimSpace(runID) == "" {
-		return errors.New("missing run_id")
-	}
+	projection := make(map[string]interface{})
+	projection["provenance"] = prov
 
-	// Validate generated_at
-	genAt, ok := parsed["generated_at"].(string)
-	if !ok || strings.TrimSpace(genAt) == "" {
-		return errors.New("missing generated_at")
-	}
-
-	// Validate classes or by_class
-	classes, ok := parsed["classes"].([]interface{})
-	if !ok {
-		classes, ok = parsed["by_class"].([]interface{})
-	}
-	if !ok || len(classes) == 0 {
-		return errors.New("missing classes or by_class array")
-	}
-
-	// Validate ablation
-	if parsed["ablation"] == nil {
-		return errors.New("missing ablation object")
-	}
-
-	// Validate report_version if present
-	if rv, exists := parsed["report_version"]; exists {
-		if rvFloat, ok := rv.(float64); !ok || int(rvFloat) != 1 {
-			return errors.New("unsupported report_version: expected 1")
+	// 2. Validate report_version if present (must be exact numeric 1)
+	if rv, exists := parsed["report_version"]; exists && rv != nil {
+		rvFloat, ok := rv.(float64)
+		if !ok || rvFloat != 1.0 {
+			return nil, errors.New("unsupported report_version: expected exactly 1")
 		}
+		projection["report_version"] = 1
 	}
 
-	return nil
+	// 3. Validate run_id: optional (can be absent or null; if present and non-null, must be non-empty string)
+	if rVal, exists := parsed["run_id"]; exists && rVal != nil {
+		runID, ok := rVal.(string)
+		if !ok || strings.TrimSpace(runID) == "" {
+			return nil, errors.New("run_id when provided must be a non-empty string")
+		}
+		projection["run_id"] = strings.TrimSpace(runID)
+	}
+
+	// 4. Validate generated_at: optional (can be absent or null; if present and non-null, must be valid RFC3339 timestamp)
+	if gVal, exists := parsed["generated_at"]; exists && gVal != nil {
+		genAt, ok := gVal.(string)
+		if !ok || strings.TrimSpace(genAt) == "" {
+			return nil, errors.New("generated_at when provided must be a non-empty string")
+		}
+		parsedTime, err := time.Parse(time.RFC3339, genAt)
+		if err != nil {
+			return nil, fmt.Errorf("invalid generated_at timestamp format: %w", err)
+		}
+		projection["generated_at"] = parsedTime.Format(time.RFC3339)
+	}
+
+	// 5. Validate classes / by_class: must be an array of class summary objects
+	classesRaw, hasClasses := parsed["classes"].([]interface{})
+	classKey := "classes"
+	if !hasClasses {
+		classesRaw, hasClasses = parsed["by_class"].([]interface{})
+		classKey = "by_class"
+	}
+	if !hasClasses {
+		return nil, errors.New("missing classes or by_class array")
+	}
+
+	projectedClasses := make([]map[string]interface{}, 0, len(classesRaw))
+	for idx, cItem := range classesRaw {
+		cObj, ok := cItem.(map[string]interface{})
+		if !ok {
+			return nil, fmt.Errorf("class row %d must be an object", idx)
+		}
+		name, ok := cObj["name"].(string)
+		if !ok || strings.TrimSpace(name) == "" {
+			return nil, fmt.Errorf("class row %d missing valid non-empty name", idx)
+		}
+		row := map[string]interface{}{
+			"name": strings.TrimSpace(name),
+		}
+
+		// total
+		if tVal, exists := cObj["total"]; exists && tVal != nil {
+			totalNum, ok := tVal.(float64)
+			if !ok || totalNum < 0 || totalNum != float64(int64(totalNum)) {
+				return nil, fmt.Errorf("class row %d total must be a non-negative integer", idx)
+			}
+			row["total"] = int64(totalNum)
+		} else {
+			row["total"] = nil
+		}
+
+		// blocked
+		if bVal, exists := cObj["blocked"]; exists && bVal != nil {
+			blockedNum, ok := bVal.(float64)
+			if !ok || blockedNum < 0 || blockedNum != float64(int64(blockedNum)) {
+				return nil, fmt.Errorf("class row %d blocked must be a non-negative integer", idx)
+			}
+			if row["total"] != nil && int64(blockedNum) > row["total"].(int64) {
+				return nil, fmt.Errorf("class row %d blocked (%d) cannot exceed total (%d)", idx, int64(blockedNum), row["total"].(int64))
+			}
+			row["blocked"] = int64(blockedNum)
+		} else {
+			row["blocked"] = nil
+		}
+
+		// block_rate
+		if rVal, exists := cObj["block_rate"]; exists && rVal != nil {
+			rateNum, ok := rVal.(float64)
+			if !ok || rateNum < 0.0 || rateNum > 1.0 {
+				return nil, fmt.Errorf("class row %d block_rate must be between 0 and 1", idx)
+			}
+			row["block_rate"] = rateNum
+		} else {
+			row["block_rate"] = nil
+		}
+
+		projectedClasses = append(projectedClasses, row)
+	}
+	projection[classKey] = projectedClasses
+
+	// 6. Validate ablation: required object if present
+	if ablationRaw, ok := parsed["ablation"].(map[string]interface{}); ok && ablationRaw != nil {
+		projection["ablation"] = ablationRaw
+	} else if parsed["ablation"] != nil {
+		return nil, errors.New("ablation must be an object")
+	}
+
+	// 7. Optional top-level approved summary fields
+	if cov, ok := parsed["coverage"].(map[string]interface{}); ok {
+		projection["coverage"] = cov
+	}
+	if fpr, ok := parsed["false_positive_rate"].(float64); ok && fpr >= 0 && fpr <= 1 {
+		projection["false_positive_rate"] = fpr
+	}
+	if medLat, ok := parsed["median_latency_ms"].(float64); ok && medLat >= 0 {
+		projection["median_latency_ms"] = medLat
+	}
+	if p95Lat, ok := parsed["p95_latency_ms"].(float64); ok && p95Lat >= 0 {
+		projection["p95_latency_ms"] = p95Lat
+	}
+	if counts, ok := parsed["catching_layer_counts"].(map[string]interface{}); ok {
+		projection["catching_layer_counts"] = counts
+	}
+
+	return projection, nil
 }

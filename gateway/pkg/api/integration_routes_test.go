@@ -840,6 +840,55 @@ func TestAuditIssue5_BenchmarkReportContractValidation(t *testing.T) {
 	if err := validateBenchmarkReport([]byte(`{"provenance": "invalid_val", "run_id": "r1"}`)); err == nil {
 		t.Fatalf("expected error on invalid provenance")
 	}
+
+	// Test Tharun's requested acceptance rules
+	// 1. Static dashboard fixture with omitted/null run_id and generated_at is accepted
+	validStaticFixture := []byte(`{
+		"report_version": 1,
+		"provenance": "synthetic",
+		"run_id": null,
+		"generated_at": null,
+		"by_class": [
+			{"name": "prompt_injection", "total": 10, "blocked": 9, "block_rate": 0.9}
+		],
+		"ablation": {
+			"full_stack": {"block_rate": 0.9}
+		}
+	}`)
+	if err := validateBenchmarkReport(validStaticFixture); err != nil {
+		t.Fatalf("expected valid static fixture with null run_id to pass: %v", err)
+	}
+
+	// 2. Invalid date-time rejected
+	invalidDate := []byte(`{
+		"provenance": "genuine",
+		"generated_at": "not-a-date",
+		"classes": []
+	}`)
+	if err := validateBenchmarkReport(invalidDate); err == nil {
+		t.Fatalf("expected error on invalid RFC3339 date")
+	}
+
+	// 3. Version != 1 rejected
+	invalidVersion := []byte(`{
+		"provenance": "genuine",
+		"report_version": 2,
+		"classes": []
+	}`)
+	if err := validateBenchmarkReport(invalidVersion); err == nil {
+		t.Fatalf("expected error on report_version != 1")
+	}
+
+	// 4. blocked > total rejected
+	invalidBlocked := []byte(`{
+		"provenance": "genuine",
+		"classes": [
+			{"name": "injection", "total": 5, "blocked": 6}
+		]
+	}`)
+	if err := validateBenchmarkReport(invalidBlocked); err == nil {
+		t.Fatalf("expected error on blocked > total")
+	}
 }
 
 func TestAudit_ApprovalRejectionMutualExclusion(t *testing.T) {
