@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentguard-workstream-c"
+version = "0.1.0"
+description = "AgentGuard agents, attacks, and benchmark workstream"
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+agent = ["langgraph>=1.2.20,<2.0"]
+agent-provider = ["anthropic>=1.0,<2.0"]
+local-smoke = ["cryptography>=42"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"agentguard_workstream_c.attacks" = ["scenario.schema.json", "scenarios/*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

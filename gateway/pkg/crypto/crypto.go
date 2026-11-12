@@ -177,6 +177,17 @@ func VerifyMandateSignature(m *models.Mandate) (bool, error) {
 
 	valid := ed25519.Verify(pubBytes, canonicalBytes, sigBytes)
 	if !valid {
+		// If verification fails and m.PublicKey was populated, also test canonicalizing with empty public_key
+		// to support client signers (like dashboard builder or SDK) that omit public_key from payload during signing
+		if m.PublicKey != "" {
+			mAlt := *m
+			mAlt.PublicKey = ""
+			if altBytes, err := CanonicalMandateBytes(&mAlt); err == nil {
+				if ed25519.Verify(pubBytes, altBytes, sigBytes) {
+					return true, nil
+				}
+			}
+		}
 		return false, ErrInvalidSignature
 	}
 	return true, nil

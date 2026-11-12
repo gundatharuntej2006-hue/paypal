@@ -20,7 +20,11 @@ import json
 import sys
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
+try:
+    from datetime import UTC
+except ImportError:
+    UTC = timezone.utc
 from decimal import Decimal, InvalidOperation
 from typing import Any
 

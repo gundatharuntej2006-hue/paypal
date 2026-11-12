@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -46,7 +48,28 @@ func main() {
 	// 2. Initialize Mandate Verifier, Nonce Store & Principal Registry (Fix 2)
 	nonceStore := mandate.NewMemoryNonceStore()
 	principalRegistry := mandate.NewMemoryPrincipalRegistry()
-	// In dev mode, lenient registry allows self-registration or seeded keys
+
+	// Pre-register bootstrap principals from environment configuration
+	if cfg.BootstrapPrincipals != "" {
+		pairs := strings.Split(cfg.BootstrapPrincipals, ",")
+		for _, pair := range pairs {
+			parts := strings.Split(strings.TrimSpace(pair), ":")
+			if len(parts) == 2 && parts[0] != "" && parts[1] != "" {
+				principalRegistry.RegisterPrincipal(parts[0], parts[1])
+				log.Printf("[gateway] 🔑 pre-registered bootstrap principal '%s'", parts[0])
+			}
+		}
+	}
+	if cfg.TestPrincipalID != "" && cfg.TestPrincipalPublicKey != "" {
+		principalRegistry.RegisterPrincipal(cfg.TestPrincipalID, cfg.TestPrincipalPublicKey)
+		log.Printf("[gateway] 🔑 pre-registered test principal '%s'", cfg.TestPrincipalID)
+	}
+	// In development or dry-run mode, also pre-seed standard test vector principals
+	if cfg.Env != "production" || cfg.GatewayMode == "dryrun" {
+		principalRegistry.RegisterPrincipal("principal_cross_lang", "ebVWLo/mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ=")
+		principalRegistry.RegisterPrincipal("user_vivek", "+QrsGHy80RVVR5btBnZ26hkL+aJ9ZbqWJVAffz7v5gE=")
+	}
+
 	verifier := mandate.NewVerifier(nonceStore, led, principalRegistry)
 	verifier.SetStrictRegistry(cfg.Env == "production")
 
@@ -95,8 +118,14 @@ func main() {
 	server := api.NewServer(cfg, led, verifier, sm, decisionEngine, ppClient, intel, broker)
 	handler := api.SetupRouter(server)
 
+	listenAddr := cfg.ListenAddr()
+	ln, err := net.Listen("tcp", listenAddr)
+	if err != nil {
+		log.Fatalf("[gateway] FATAL: failed to bind listener on %s: %v", listenAddr, err)
+	}
+
 	httpServer := &http.Server{
-		Addr:         ":" + cfg.Port,
+		Addr:         listenAddr,
 		Handler:      handler,
 		ReadTimeout:  15 * time.Second,
 		WriteTimeout: 15 * time.Second,
@@ -107,13 +136,13 @@ func main() {
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 
 	go func() {
-		fmt.Printf("\n🛡️  AgentGuard Payment Firewall Gateway listening on http://localhost:%s\n", cfg.Port)
+		fmt.Printf("\n🛡️  AgentGuard Payment Firewall Gateway listening on http://%s\n", ln.Addr().String())
 		fmt.Printf("   - Health check:     GET  /health\n")
 		fmt.Printf("   - Payment intents:  POST /v1/payments/intents\n")
 		fmt.Printf("   - SSE event stream: GET  /v1/events\n")
 		fmt.Printf("   - Ledger hook:      POST /internal/ledger/events\n\n")
 
-		if err := httpServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		if err := httpServer.Serve(ln); err != nil && err != http.ErrServerClosed {
 			log.Fatalf("[gateway] server listen error: %v", err)
 		}
 	}()

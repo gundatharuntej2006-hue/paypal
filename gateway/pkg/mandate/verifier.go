@@ -206,6 +206,14 @@ func (v *Verifier) RegisterPrincipal(principalID string, publicKeyBase64 string)
 	}
 }
 
+// GetPrincipalPublicKey returns the registered public key for a principal.
+func (v *Verifier) GetPrincipalPublicKey(principalID string) (string, error) {
+	if v.principalRegistry == nil {
+		return "", ErrUnknownPrincipal
+	}
+	return v.principalRegistry.GetPublicKey(principalID)
+}
+
 // RegisterMerchant registers a merchant in the verifier's merchant registry.
 func (v *Verifier) RegisterMerchant(merchantID string, info MerchantPayeeInfo) {
 	if r, ok := v.merchantRegistry.(*MemoryMerchantRegistry); ok {
@@ -237,8 +245,25 @@ type VerificationResult struct {
 	Reasons      []string `json:"reasons"`
 }
 
-// VerifyMandate runs all deterministic mandate rules against a payment intent.
+// VerifyMandate runs all deterministic mandate rules against a payment intent and consumes the nonce.
 func (v *Verifier) VerifyMandate(req *models.PaymentIntentRequest, now time.Time) (*VerificationResult, error) {
+	return v.verifyMandateInternal(req, now, true)
+}
+
+// VerifyMandateWithoutNonce runs all deterministic mandate rules without consuming the nonce.
+func (v *Verifier) VerifyMandateWithoutNonce(req *models.PaymentIntentRequest, now time.Time) (*VerificationResult, error) {
+	return v.verifyMandateInternal(req, now, false)
+}
+
+// ConsumeNonce consumes a nonce for a mandate in the nonce store.
+func (v *Verifier) ConsumeNonce(nonceKey, mandateID string) (bool, error) {
+	if v.nonceStore == nil {
+		return true, nil
+	}
+	return v.nonceStore.CheckAndConsume(nonceKey, mandateID)
+}
+
+func (v *Verifier) verifyMandateInternal(req *models.PaymentIntentRequest, now time.Time, consumeNonce bool) (*VerificationResult, error) {
 	m := &req.Mandate
 
 	// 1. Time validity window
@@ -256,8 +281,12 @@ func (v *Verifier) VerifyMandate(req *models.PaymentIntentRequest, now time.Time
 			if v.strictRegistry {
 				return &VerificationResult{Valid: false, FailedReason: ErrUnknownPrincipal.Error()}, ErrUnknownPrincipal
 			}
-		} else if trustedKey != m.PublicKey {
-			return &VerificationResult{Valid: false, FailedReason: ErrUntrustedPrincipalKey.Error()}, ErrUntrustedPrincipalKey
+		} else {
+			if m.PublicKey == "" {
+				m.PublicKey = trustedKey
+			} else if trustedKey != m.PublicKey {
+				return &VerificationResult{Valid: false, FailedReason: ErrUntrustedPrincipalKey.Error()}, ErrUntrustedPrincipalKey
+			}
 		}
 	}
 
@@ -268,13 +297,15 @@ func (v *Verifier) VerifyMandate(req *models.PaymentIntentRequest, now time.Time
 	}
 
 	// 4. Nonce replay protection (namespaced so dry-run never contaminates live nonces)
-	nonceKey := "live:" + m.Nonce
-	if req.DryRun {
-		nonceKey = "dryrun:" + m.Nonce
-	}
-	ok, err := v.nonceStore.CheckAndConsume(nonceKey, m.MandateID)
-	if err != nil || !ok {
-		return &VerificationResult{Valid: false, FailedReason: ErrNonceReplayed.Error()}, ErrNonceReplayed
+	if consumeNonce && v.nonceStore != nil {
+		nonceKey := "live:" + m.Nonce
+		if req.DryRun {
+			nonceKey = "dryrun:" + m.Nonce
+		}
+		ok, err := v.nonceStore.CheckAndConsume(nonceKey, m.MandateID)
+		if err != nil || !ok {
+			return &VerificationResult{Valid: false, FailedReason: ErrNonceReplayed.Error()}, ErrNonceReplayed
+		}
 	}
 
 	// 5. Agent identity binding
@@ -322,10 +353,14 @@ func (v *Verifier) VerifyMandate(req *models.PaymentIntentRequest, now time.Time
 		}, ErrPerTxnCapExceeded
 	}
 
-	// 8. Cumulative total cap
+	// 8. Cumulative total cap (independent tracking for live vs dryrun mode)
 	var totalSpent float64
 	if v.spentTracker != nil {
-		totalSpent, err = v.spentTracker.GetTotalSpent(m.MandateID)
+		trackerMandateID := m.MandateID
+		if req.DryRun {
+			trackerMandateID = "dryrun:" + m.MandateID
+		}
+		totalSpent, err = v.spentTracker.GetTotalSpent(trackerMandateID)
 		if err != nil {
 			return nil, fmt.Errorf("failed to query total spent: %w", err)
 		}

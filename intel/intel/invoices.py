@@ -18,7 +18,11 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-from datetime import UTC, datetime
+from datetime import datetime, timezone
+try:
+    from datetime import UTC
+except ImportError:
+    UTC = timezone.utc
 from decimal import Decimal, InvalidOperation
 from typing import Any
 

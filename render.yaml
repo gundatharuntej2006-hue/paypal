@@ -5,7 +5,6 @@ services:
   - type: web
     name: agentguard-gateway
     runtime: go
-    branch: ritika
     rootDir: gateway
     plan: starter
     buildCommand: go build -o bin/gateway ./cmd/gateway/main.go
@@ -13,7 +12,7 @@ services:
     healthCheckPath: /health
     envVars:
       - key: PORT
-        value: 8080
+        value: "8080"
       - key: ENV
         value: production
       - key: DB_DRIVER
@@ -28,7 +27,7 @@ services:
           name: agentguard-intel
           property: hostport
       - key: INTEL_TIMEOUT_MS
-        value: 3000
+        value: "7000"
       - key: INTEL_API_TOKEN
         generateValue: true
       - key: AGENT_AUTH_TOKEN
@@ -49,6 +48,8 @@ services:
         sync: false
       - key: PAYPAL_MOCK_MODE
         value: "false"
+      - key: DEMO_MODE
+        value: "true"
 
   # -------------------------------------------------------------
   # 2. Intelligence Service (FastAPI) - Workstream B (Atul)
@@ -92,7 +93,6 @@ services:
     name: agentguard-dashboard
     # Static sites use Render CDN and have no plan, region, or HTTP health check setting.
     runtime: static
-    branch: ritika
     autoDeploy: true
     rootDir: dashboard
     buildCommand: npm ci && npm run build

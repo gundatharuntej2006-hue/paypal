@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -32,11 +33,14 @@ type Ledger interface {
 	GetEventsByPayment(ctx context.Context, paymentID string) ([]models.LedgerEvent, error)
 	GetEventsByMandate(ctx context.Context, mandateID string) ([]models.LedgerEvent, error)
 	ListEvents(ctx context.Context, limit int) ([]models.LedgerEvent, error)
+	ListPayments(ctx context.Context, limit int) ([]*models.PaymentProjection, error)
 	GetPaymentProjection(ctx context.Context, paymentID string) (*models.PaymentProjection, error)
 	GetMandateProjection(ctx context.Context, mandateID string) (*models.MandateProjection, error)
 	GetTotalSpent(mandateID string) (float64, error)
 	GetDecisionByIdempotencyKey(ctx context.Context, idempKey string) (*models.DecisionResponse, error)
+	GetDecisionRecordByIdempotencyKey(ctx context.Context, idempKey string) (*models.DecisionResponse, string, error)
 	SaveDecisionIdempotency(ctx context.Context, idempKey string, resp *models.DecisionResponse) error
+	SaveDecisionIdempotencyWithHash(ctx context.Context, idempKey string, resp *models.DecisionResponse, reqHash string) error
 	ConsumeStepUpToken(ctx context.Context, paymentID string, token string) error
 	ReserveBudget(ctx context.Context, mandateID string, paymentID string, amount float64, maxTotal float64) error
 	ReleaseBudgetReservation(ctx context.Context, mandateID string, paymentID string)
@@ -56,7 +60,8 @@ type MemoryLedger struct {
 	seenIdempKeys map[string]bool
 
 	// Idempotency decision cache (Fix 5: recovery of original decision)
-	cachedDecisions map[string]*models.DecisionResponse
+	cachedDecisions      map[string]*models.DecisionResponse
+	cachedDecisionHashes map[string]string
 
 	// Projections
 	paymentProjections map[string]*models.PaymentProjection
@@ -68,9 +73,10 @@ type MemoryLedger struct {
 
 func NewMemoryLedger() *MemoryLedger {
 	return &MemoryLedger{
-		eventsByID:         make(map[string]*models.LedgerEvent),
-		seenIdempKeys:      make(map[string]bool),
-		cachedDecisions:    make(map[string]*models.DecisionResponse),
+		eventsByID:           make(map[string]*models.LedgerEvent),
+		seenIdempKeys:        make(map[string]bool),
+		cachedDecisions:      make(map[string]*models.DecisionResponse),
+		cachedDecisionHashes: make(map[string]string),
 		paymentProjections: make(map[string]*models.PaymentProjection),
 		mandateProjections: make(map[string]*models.MandateProjection),
 		budgetReservations: make(map[string]map[string]float64),
@@ -163,6 +169,21 @@ func (m *MemoryLedger) ListEvents(ctx context.Context, limit int) ([]models.Ledg
 	return result, nil
 }
 
+func (m *MemoryLedger) ListPayments(ctx context.Context, limit int) ([]*models.PaymentProjection, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	res := make([]*models.PaymentProjection, 0, len(m.paymentProjections))
+	for _, p := range m.paymentProjections {
+		cp := *p
+		res = append(res, &cp)
+		if limit > 0 && len(res) >= limit {
+			break
+		}
+	}
+	return res, nil
+}
+
 func (m *MemoryLedger) GetPaymentProjection(ctx context.Context, paymentID string) (*models.PaymentProjection, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
@@ -203,23 +224,43 @@ func (m *MemoryLedger) GetTotalSpent(mandateID string) (float64, error) {
 }
 
 func (m *MemoryLedger) GetDecisionByIdempotencyKey(ctx context.Context, idempKey string) (*models.DecisionResponse, error) {
+	dec, _, err := m.GetDecisionRecordByIdempotencyKey(ctx, idempKey)
+	return dec, err
+}
+
+func (m *MemoryLedger) GetDecisionRecordByIdempotencyKey(ctx context.Context, idempKey string) (*models.DecisionResponse, string, error) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
 	dec, ok := m.cachedDecisions[idempKey]
 	if !ok {
-		return nil, ErrNotFound
+		return nil, "", ErrNotFound
 	}
 	decCopy := *dec
-	return &decCopy, nil
+	hash := ""
+	if m.cachedDecisionHashes != nil {
+		hash = m.cachedDecisionHashes[idempKey]
+	}
+	return &decCopy, hash, nil
 }
 
 func (m *MemoryLedger) SaveDecisionIdempotency(ctx context.Context, idempKey string, resp *models.DecisionResponse) error {
+	return m.SaveDecisionIdempotencyWithHash(ctx, idempKey, resp, "")
+}
+
+func (m *MemoryLedger) SaveDecisionIdempotencyWithHash(ctx context.Context, idempKey string, resp *models.DecisionResponse, reqHash string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	if m.cachedDecisions == nil {
+		m.cachedDecisions = make(map[string]*models.DecisionResponse)
+	}
+	if m.cachedDecisionHashes == nil {
+		m.cachedDecisionHashes = make(map[string]string)
+	}
 	respCopy := *resp
 	m.cachedDecisions[idempKey] = &respCopy
+	m.cachedDecisionHashes[idempKey] = reqHash
 	return nil
 }
 
@@ -280,6 +321,11 @@ func (m *MemoryLedger) ReleaseBudgetReservation(ctx context.Context, mandateID s
 	if resMap, ok := m.budgetReservations[mandateID]; ok {
 		delete(resMap, paymentID)
 	}
+	if !strings.HasPrefix(mandateID, "dryrun:") {
+		if resMap, ok := m.budgetReservations["dryrun:"+mandateID]; ok {
+			delete(resMap, paymentID)
+		}
+	}
 }
 
 func (m *MemoryLedger) CommitBudgetReservation(ctx context.Context, mandateID string, paymentID string) {
@@ -287,6 +333,12 @@ func (m *MemoryLedger) CommitBudgetReservation(ctx context.Context, mandateID st
 	defer m.mu.Unlock()
 
 	resMap, ok := m.budgetReservations[mandateID]
+	if !ok {
+		// Also check dry-run reservation map
+		if !strings.HasPrefix(mandateID, "dryrun:") {
+			resMap, ok = m.budgetReservations["dryrun:"+mandateID]
+		}
+	}
 	if !ok {
 		return
 	}
@@ -303,15 +355,20 @@ func (m *MemoryLedger) CommitBudgetReservation(ctx context.Context, mandateID st
 		pProj.SpentCommitted = true
 	}
 
-	if !isDry && mandateID != "" {
-		mProj, ok := m.mandateProjections[mandateID]
+	targetMandateID := mandateID
+	if isDry && !strings.HasPrefix(targetMandateID, "dryrun:") {
+		targetMandateID = "dryrun:" + targetMandateID
+	}
+
+	if targetMandateID != "" {
+		mProj, ok := m.mandateProjections[targetMandateID]
 		if !ok {
 			mProj = &models.MandateProjection{
-				MandateID:  mandateID,
+				MandateID:  targetMandateID,
 				TotalSpent: "0.00",
 				Currency:   "USD",
 			}
-			m.mandateProjections[mandateID] = mProj
+			m.mandateProjections[targetMandateID] = mProj
 		}
 		curSpent, _ := strconv.ParseFloat(mProj.TotalSpent, 64)
 		mProj.TotalSpent = fmt.Sprintf("%.2f", curSpent+amt)
@@ -443,12 +500,16 @@ func (m *MemoryLedger) applyEventToProjections(e *models.LedgerEvent) {
 			if capID, ok := data["capture_id"].(string); ok {
 				proj.PayPalCaptureID = capID
 			}
-			// Update mandate spent ONLY if NOT a dry run and NOT already transferred by commit!
+			// Update mandate spent ONLY if NOT a dry run, NOT synthetic demo, and NOT already transferred by commit!
+			isSynthetic := e.Source == "synthetic_demo"
+			if sVal, ok := data["is_synthetic"].(bool); ok && sVal {
+				isSynthetic = true
+			}
 			isDry := proj.IsDryRun || e.Source == "dry_run"
 			if dVal, ok := data["dry_run"].(bool); ok && dVal {
 				isDry = true
 			}
-			if !isDry && !proj.SpentCommitted && mandateID != "" && proj.Amount != "" {
+			if !isSynthetic && !isDry && !proj.SpentCommitted && mandateID != "" && proj.Amount != "" {
 				m.updateMandateSpent(mandateID, proj.Amount, proj.Currency, e.CreatedAt)
 				proj.SpentCommitted = true
 			}
@@ -536,8 +597,10 @@ func (p *PostgresLedger) migrate() error {
 	CREATE TABLE IF NOT EXISTS idempotency_decisions (
 		idempotency_key TEXT PRIMARY KEY,
 		decision JSONB NOT NULL,
+		request_hash TEXT,
 		created_at TIMESTAMP WITH TIME ZONE NOT NULL
 	);
+	ALTER TABLE idempotency_decisions ADD COLUMN IF NOT EXISTS request_hash TEXT;
 
 	CREATE TABLE IF NOT EXISTS projections_payments (
 		payment_id TEXT PRIMARY KEY,
@@ -772,7 +835,12 @@ func (p *PostgresLedger) applyEventToProjectionsTx(ctx context.Context, tx *sql.
 			isDryRun = true
 		}
 
-		if !isDryRun && !spentCommitted && mandateID != "" && amountStr != "" {
+		isSynthetic := e.Source == "synthetic_demo"
+		if sVal, ok := data["is_synthetic"].(bool); ok && sVal {
+			isSynthetic = true
+		}
+
+		if !isSynthetic && !isDryRun && !spentCommitted && mandateID != "" && amountStr != "" {
 			amt, _ := strconv.ParseFloat(amountStr, 64)
 			if amt > 0 {
 				_, err = tx.ExecContext(ctx, `
@@ -886,6 +954,42 @@ func (p *PostgresLedger) ListEvents(ctx context.Context, limit int) ([]models.Le
 	return events, nil
 }
 
+func (p *PostgresLedger) ListPayments(ctx context.Context, limit int) ([]*models.PaymentProjection, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := p.db.QueryContext(ctx, `
+		SELECT payment_id, mandate_id, COALESCE(merchant_id, ''), COALESCE(amount, ''), COALESCE(currency, ''), 
+		       COALESCE(state, ''), COALESCE(decision, ''), COALESCE(risk_score, 0), COALESCE(step_up_token, ''), 
+		       step_up_expires_at, COALESCE(step_up_consumed, FALSE), COALESCE(spent_committed, FALSE), COALESCE(is_dry_run, FALSE),
+		       COALESCE(paypal_order_id, ''), COALESCE(paypal_auth_id, ''), COALESCE(paypal_capture_id, ''), 
+		       created_at, updated_at 
+		FROM projections_payments
+		ORDER BY created_at DESC
+		LIMIT $1
+	`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var list []*models.PaymentProjection
+	for rows.Next() {
+		var pr models.PaymentProjection
+		if err := rows.Scan(
+			&pr.PaymentID, &pr.MandateID, &pr.MerchantID, &pr.Amount, &pr.Currency,
+			&pr.State, &pr.Decision, &pr.RiskScore, &pr.StepUpToken,
+			&pr.StepUpExpiresAt, &pr.StepUpConsumed, &pr.SpentCommitted, &pr.IsDryRun,
+			&pr.PayPalOrderID, &pr.PayPalAuthID, &pr.PayPalCaptureID,
+			&pr.CreatedAt, &pr.UpdatedAt,
+		); err != nil {
+			return nil, err
+		}
+		list = append(list, &pr)
+	}
+	return list, nil
+}
+
 func (p *PostgresLedger) GetPaymentProjection(ctx context.Context, paymentID string) (*models.PaymentProjection, error) {
 	row := p.db.QueryRowContext(ctx,
 		`SELECT payment_id, mandate_id, COALESCE(merchant_id, ''), COALESCE(amount, ''), COALESCE(currency, ''), 
@@ -941,33 +1045,43 @@ func (p *PostgresLedger) GetTotalSpent(mandateID string) (float64, error) {
 }
 
 func (p *PostgresLedger) GetDecisionByIdempotencyKey(ctx context.Context, idempKey string) (*models.DecisionResponse, error) {
+	dec, _, err := p.GetDecisionRecordByIdempotencyKey(ctx, idempKey)
+	return dec, err
+}
+
+func (p *PostgresLedger) GetDecisionRecordByIdempotencyKey(ctx context.Context, idempKey string) (*models.DecisionResponse, string, error) {
 	row := p.db.QueryRowContext(ctx,
-		"SELECT decision FROM idempotency_decisions WHERE idempotency_key = $1",
+		"SELECT decision, COALESCE(request_hash, '') FROM idempotency_decisions WHERE idempotency_key = $1",
 		idempKey,
 	)
 	var dataStr string
-	err := row.Scan(&dataStr)
+	var reqHash string
+	err := row.Scan(&dataStr, &reqHash)
 	if err != nil {
 		if errors.Is(err, sql.ErrNoRows) {
-			return nil, ErrNotFound
+			return nil, "", ErrNotFound
 		}
-		return nil, err
+		return nil, "", err
 	}
 	var dec models.DecisionResponse
 	if err := json.Unmarshal([]byte(dataStr), &dec); err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	return &dec, nil
+	return &dec, reqHash, nil
 }
 
 func (p *PostgresLedger) SaveDecisionIdempotency(ctx context.Context, idempKey string, resp *models.DecisionResponse) error {
+	return p.SaveDecisionIdempotencyWithHash(ctx, idempKey, resp, "")
+}
+
+func (p *PostgresLedger) SaveDecisionIdempotencyWithHash(ctx context.Context, idempKey string, resp *models.DecisionResponse, reqHash string) error {
 	dataBytes, err := json.Marshal(resp)
 	if err != nil {
 		return err
 	}
 	_, err = p.db.ExecContext(ctx,
-		"INSERT INTO idempotency_decisions (idempotency_key, decision, created_at) VALUES ($1, $2, $3) ON CONFLICT (idempotency_key) DO NOTHING",
-		idempKey, string(dataBytes), time.Now().UTC(),
+		"INSERT INTO idempotency_decisions (idempotency_key, decision, request_hash, created_at) VALUES ($1, $2, $3, $4) ON CONFLICT (idempotency_key) DO NOTHING",
+		idempKey, string(dataBytes), reqHash, time.Now().UTC(),
 	)
 	return err
 }
@@ -1021,6 +1135,9 @@ func (p *PostgresLedger) ReserveBudget(ctx context.Context, mandateID string, pa
 		return err
 	}
 	defer tx.Rollback()
+
+	// Transactional advisory lock on mandateID to serialize concurrent budget reservations for this mandate
+	_, _ = tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, mandateID)
 
 	var totalSpentStr string
 	row := tx.QueryRowContext(ctx, `SELECT total_spent FROM projections_mandates WHERE mandate_id = $1 FOR UPDATE`, mandateID)
@@ -1076,14 +1193,18 @@ func (p *PostgresLedger) CommitBudgetReservation(ctx context.Context, mandateID 
 		if pMandateID != "" {
 			mandateID = pMandateID
 		}
-		if !isDryRun && mandateID != "" {
+		targetMandateID := mandateID
+		if isDryRun && !strings.HasPrefix(targetMandateID, "dryrun:") {
+			targetMandateID = "dryrun:" + targetMandateID
+		}
+		if targetMandateID != "" {
 			_, _ = tx.ExecContext(ctx, `
 				INSERT INTO projections_mandates (mandate_id, principal_id, total_spent, currency, last_updated)
 				VALUES ($1, '', $2, 'USD', $3)
 				ON CONFLICT (mandate_id) DO UPDATE SET
 					total_spent = (CAST(projections_mandates.total_spent AS NUMERIC) + CAST(EXCLUDED.total_spent AS NUMERIC))::TEXT,
 					last_updated = EXCLUDED.last_updated
-			`, mandateID, fmt.Sprintf("%.2f", amount), time.Now().UTC())
+			`, targetMandateID, fmt.Sprintf("%.2f", amount), time.Now().UTC())
 
 			_, _ = tx.ExecContext(ctx, `UPDATE projections_payments SET spent_committed = TRUE WHERE payment_id = $1`, paymentID)
 		}
@@ -1098,8 +1219,8 @@ func (p *PostgresLedger) Replay(ctx context.Context) error {
 	}
 	defer tx.Rollback()
 
-	// Wipe projections
-	if _, err := tx.ExecContext(ctx, "DELETE FROM projections_payments; DELETE FROM projections_mandates;"); err != nil {
+	// Wipe projections and transient reservations
+	if _, err := tx.ExecContext(ctx, "DELETE FROM projections_payments; DELETE FROM projections_mandates; DELETE FROM projections_budget_reservations;"); err != nil {
 		return err
 	}
 

@@ -1,0 +1,5 @@
+# Tested Windows environment. No new dependencies are introduced by constraints.
+langgraph==1.2.20
+# 0.19.0's native wheel was blocked by Application Control in this environment.
+# 0.12.0 satisfies the installed LangChain/LangSmith requirements and imports here.
+uuid-utils==0.12.0

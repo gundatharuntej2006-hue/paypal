@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 type Config struct {
 	Port                string
+	BindAddr            string
 	Env                 string
 	DBDriver            string
 	DatabaseURL         string
@@ -23,14 +25,21 @@ type Config struct {
 	RiskStepUpThreshold float64
 
 	GatewayMode        string // "dryrun", "mock", "live"
+	DemoMode           bool
 	PayPalEnv          string
 	PayPalClientID     string
 	PayPalClientSecret string
 	PayPalMockMode     bool
+
+	// Pre-registered Principals for secure bootstrap/test execution
+	BootstrapPrincipals    string
+	TestPrincipalID        string
+	TestPrincipalPublicKey string
 }
 
 func Load() *Config {
 	port := getEnv("PORT", "8080")
+	bindAddr := os.Getenv("GATEWAY_BIND_ADDR")
 	env := getEnv("ENV", "development")
 	dbDriver := getEnv("DB_DRIVER", "memory")
 	dbURL := os.Getenv("DATABASE_URL")
@@ -44,9 +53,9 @@ func Load() *Config {
 		intelURL = "http://" + intelURL
 	}
 
-	intelTimeoutMS, _ := strconv.Atoi(getEnv("INTEL_TIMEOUT_MS", "3000"))
+	intelTimeoutMS, _ := strconv.Atoi(getEnv("INTEL_TIMEOUT_MS", "7000"))
 	if intelTimeoutMS <= 0 {
-		intelTimeoutMS = 3000
+		intelTimeoutMS = 7000
 	}
 
 	blockThresh, err := strconv.ParseFloat(getEnv("RISK_THRESHOLD_BLOCK", "0.65"), 64)
@@ -78,8 +87,11 @@ func Load() *Config {
 		}
 	}
 
+	demoMode := os.Getenv("DEMO_MODE") == "true" || os.Getenv("DEMO_SANDBOX") == "1" || os.Getenv("ENABLE_DEMO") == "true"
+
 	return &Config{
 		Port:                port,
+		BindAddr:            bindAddr,
 		Env:                 env,
 		DBDriver:            dbDriver,
 		DatabaseURL:         dbURL,
@@ -92,10 +104,15 @@ func Load() *Config {
 		RiskBlockThreshold:  blockThresh,
 		RiskStepUpThreshold: stepUpThresh,
 		GatewayMode:         gatewayMode,
-		PayPalEnv:          getEnv("PAYPAL_ENV", "sandbox"),
-		PayPalClientID:     clientID,
-		PayPalClientSecret: clientSecret,
-		PayPalMockMode:     mockMode,
+		DemoMode:            demoMode,
+		PayPalEnv:           getEnv("PAYPAL_ENV", "sandbox"),
+		PayPalClientID:      clientID,
+		PayPalClientSecret:  clientSecret,
+		PayPalMockMode:      mockMode,
+
+		BootstrapPrincipals:    os.Getenv("BOOTSTRAP_PRINCIPALS"),
+		TestPrincipalID:        os.Getenv("TEST_PRINCIPAL_ID"),
+		TestPrincipalPublicKey: os.Getenv("TEST_PRINCIPAL_PUBLIC_KEY"),
 	}
 }
 
@@ -128,4 +145,19 @@ func getEnv(key, fallback string) string {
 		return fallback
 	}
 	return val
+}
+
+// ListenAddr returns the combined host:port string for binding HTTP listeners.
+// If BindAddr is configured (e.g. "127.0.0.1"), it produces "127.0.0.1:<Port>".
+// If BindAddr is empty, it returns ":<Port>" which binds across all available interfaces.
+func (c *Config) ListenAddr() string {
+	cleanPort := strings.TrimPrefix(strings.TrimSpace(c.Port), ":")
+	if cleanPort == "" {
+		cleanPort = "8080"
+	}
+	trimmedBind := strings.TrimSpace(c.BindAddr)
+	if trimmedBind != "" {
+		return net.JoinHostPort(trimmedBind, cleanPort)
+	}
+	return ":" + cleanPort
 }
