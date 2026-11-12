@@ -196,8 +196,17 @@ func TestIntegrationRoutes_PaymentsAndApprovals(t *testing.T) {
 	req = httptest.NewRequest(http.MethodPost, "/v1/payments/intents", bytes.NewReader(body2))
 	rec = httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("payment intent 2 returned %d: %s", rec.Code, rec.Body.String())
+	}
 	var decResp2 models.DecisionResponse
 	_ = json.NewDecoder(rec.Body).Decode(&decResp2)
+	if decResp2.PaymentID == "" {
+		t.Fatalf("decResp2 has empty payment id: %+v", decResp2)
+	}
+	if decResp2.Decision != models.DecisionStepUp {
+		t.Fatalf("expected step_up for payment 2, got %s (reasons: %v)", decResp2.Decision, decResp2.Reasons)
+	}
 
 	rejectPayload := map[string]interface{}{
 		"reason": "Not approved by finance lead",
