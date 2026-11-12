@@ -18,7 +18,11 @@ On a fresh machine, install first: `pip install -e ".[dev]"`
 ## Getting access (for judges and teammates)
 
 - **No keys at all:** set `INTEL_MODE=stub`. Every endpoint answers with input-aware canned results (see "Stub triggers" below), which is enough to run the whole system end to end.
-- **Anthropic API key** (for the LLM part of scan and judge): create one at https://console.anthropic.com and set `ANTHROPIC_API_KEY`. Without it the service still runs: clear injections are caught by the rules, risk scoring works fully, and everything the LLM would decide comes back `unknown`, so the gateway steps up instead of allowing.
+- **LLM key** (for the LLM part of scan and judge), either one:
+  - **Google Gemini, free tier:** create a key at https://aistudio.google.com/apikey and set `GEMINI_API_KEY`. The free tier allows about 20 requests a day per model (checked on 2026-11-12; AI Studio shows your limits), so the default is a chain of three fast models, roughly 60 LLM calls a day, and each payment uses up to two. When every model is out, scan and judge return `unknown` (`llm_rate_limited`) and the gateway steps up. Daily quotas reset at midnight Pacific time. Run test scripts with `--rpm` to stay under the per-minute limit, and don't run the full golden eval on the key the live demo uses.
+  - **Anthropic:** create a key at https://console.anthropic.com and set `ANTHROPIC_API_KEY`.
+
+  Without a key the service still runs: clear injections are caught by the rules, risk scoring works fully, and everything the LLM would decide comes back `unknown`, so the gateway steps up instead of allowing.
 - **PayPal sandbox** (for webhooks, reconciliation, payouts, invoices): create a free app at https://developer.paypal.com, then set `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET` and `PAYPAL_WEBHOOK_ID`. Tick **Transaction Search**, **Payouts** and **Invoicing** under the app's features.
 
 ## Settings (environment variables)
@@ -27,9 +31,10 @@ On a fresh machine, install first: `pip install -e ".[dev]"`
 |---|---|---|
 | `INTEL_MODE` | `live` | `stub` returns canned answers that react to the input, for integration |
 | `INTEL_API_TOKEN` | none | When set, callers must send it in the `X-Internal-Token` header |
-| `ANTHROPIC_API_KEY` | none | LLM key. Without it, the LLM-based signals return `unknown` |
-| `INTEL_SCAN_MODEL`, `INTEL_JUDGE_MODEL` | `claude-haiku-5-5` | Model for each signal |
-| `INTEL_DEADLINE_S` | `2.5` | Hard deadline per signal. A signal that runs over returns `unknown` |
+| `GEMINI_API_KEY` / `ANTHROPIC_API_KEY` | none | LLM key. Without one, the LLM-based signals return `unknown` |
+| `LLM_PROVIDER` | `gemini` if only `GEMINI_API_KEY` is set, else `anthropic` | Which LLM serves scan and judge |
+| `INTEL_SCAN_MODEL`, `INTEL_JUDGE_MODEL` | Gemini: `gemini-2.5-flash-lite,gemini-2.5-flash,gemini-3.5-flash-lite` (fastest first); Anthropic: `claude-haiku-5-5` | Model for each signal. A comma-separated list is a fallback chain: a model that hits its rate limit (or is down) rests until Google says it can be retried, and the next one answers |
+| `INTEL_DEADLINE_S` | `6` with Gemini, `2.5` with Anthropic | Hard deadline per signal. A signal that runs over returns `unknown`. Free-tier Gemini took 1.4-1.7s warm and up to 4.3s on a first call, so with Gemini set the gateway's `INTEL_TIMEOUT_MS` to `7000` |
 | `INTEL_LOCAL_UTC_OFFSET_MIN` | `330` (IST) | Time zone the risk scorer uses for its "unusual time" check |
 | `PAYPAL_ENV` | `sandbox` | `sandbox` or `live` |
 | `PAYPAL_CLIENT_ID`, `PAYPAL_CLIENT_SECRET` | none | Sandbox app credentials (needed for postback verification) |
@@ -71,16 +76,16 @@ py -m intel.invoices create --to BUYER_EMAIL --amount 29.99 --item "A4 paper, 5 
 py -m intel.invoices show INV2-XXXX                   # the proposal the gateway would receive
 ```
 
-Golden cases live in `intel/golden/*.json`. Add cases there; Tharun's library will be imported into the same format.
+Golden cases live in `intel/golden/<endpoint>.json`. `intel/golden/<endpoint>.wsc.json` are generated from Tharun's Workstream C attack library: `py -m intel.import_wsc PATH/TO/workstream-c/src`. Its 15 poisoned pages and clean pages go to scan; its benign scenarios go to judge and risk; its intent-drift scenarios are rebuilt as concrete drifted purchases for judge (see the module docstring for what is left out and why). `py -m intel.eval` reads both. Risk cases count as caught at 0.35, the gateway's step-up line.
 
 ## Live mode status
 
 - **risk:** weighted rules with no LLM, so it works without an API key.
 - **scan:** clear injections are caught by fast rules (`stage: heuristic`). Everything else goes to one batched LLM call (`stage: llm`). Results are cached by content.
 - **judge:** one LLM call with few-shot examples. Prompts are in `intel/prompts/`, and their version is returned in `version`.
-- **Without `ANTHROPIC_API_KEY`:** scan and judge return `unknown` with `reason: no_llm_key` straight away, except clear injections, which the rules still catch.
+- **Without an LLM key:** scan and judge return `unknown` with `reason: no_llm_key` straight away, except clear injections, which the rules still catch.
 
-Live check (needs the key): `py -m intel.smoke_llm 20` runs 20 rounds of scan + judge in parallel and prints verdicts and latency.
+Live check (needs a key): `py -m intel.smoke_llm 20` runs 20 rounds of scan + judge in parallel and prints verdicts and latency. On the Gemini free tier, add `--rpm 10` (and use `py -m intel.eval --rpm 10`) to stay under the per-minute limit.
 
 ## Stub triggers (`INTEL_MODE=stub`)
 

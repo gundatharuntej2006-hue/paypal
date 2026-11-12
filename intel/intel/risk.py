@@ -18,17 +18,19 @@ from decimal import Decimal
 
 from intel.models import Factor, RiskRequest, RiskResponse
 
-VERSION = "risk_rules_v1"
+VERSION = "risk_rules_v2"
 
+# Spending within what the human signed (up to the cap, most of the budget) is context, not risk:
+# amount_vs_cap + budget_used + new_merchant stay under the gateway's 0.35 step-up line on their own.
 WEIGHTS = {
     "lookalike_merchant": 0.6,
     "currency_mismatch": 0.5,
     "budget_split": 0.45,
     "duplicate_request": 0.3,
     "category_not_allowed": 0.3,
-    "amount_vs_cap": 0.25,
+    "amount_vs_cap": 0.15,
     "velocity": 0.2,
-    "budget_used": 0.15,
+    "budget_used": 0.1,
     "category_undeclared": 0.1,
     "new_merchant": 0.05,
     "unusual_time": 0.05,
@@ -66,7 +68,7 @@ def score(req: RiskRequest) -> RiskResponse:
         add("lookalike_merchant", 1, f"{proposal.merchant_id!r} looks like allowed merchant {lookalike!r}")
 
     ratio = _ratio(amount, cap)
-    add("amount_vs_cap", (ratio - 0.5) * 2, f"{proposal.amount} is {ratio:.0%} of the {mandate.max_per_txn} per-payment cap")
+    add("amount_vs_cap", (ratio - 0.7) / 0.3, f"{proposal.amount} is {ratio:.0%} of the {mandate.max_per_txn} per-payment cap")
 
     spent = sum((Decimal(h.amount) for h in past if h.decision != "block" and h.currency == mandate.currency), Decimal(0))
     used = _ratio(spent + amount, Decimal(mandate.max_total))

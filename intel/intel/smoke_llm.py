@@ -1,13 +1,15 @@
-"""Live check of the LLM signals (needs ANTHROPIC_API_KEY).
+"""Live check of the LLM signals (needs GEMINI_API_KEY or ANTHROPIC_API_KEY).
 
 Runs N rounds of scan + judge in parallel, the way the gateway calls them, and prints each result.
 Acceptance: every call returns a valid result or a clean 'unknown' with a reason.
 
 Run from the intel/ folder:  py -m intel.smoke_llm 20
+On a free tier with a per-minute limit, pause between rounds:  py -m intel.smoke_llm 10 --rpm 10
 """
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import statistics
 import sys
@@ -36,14 +38,17 @@ async def _round(i: int, deadline_s: float) -> tuple[ScanResponse, JudgeResponse
     return scan_out, judge_out, int((time.perf_counter() - start) * 1000)
 
 
-async def main(rounds: int) -> int:
+async def main(rounds: int, rpm: int = 0) -> int:
     settings = get_settings()
-    if not settings.anthropic_api_key:
-        print("ANTHROPIC_API_KEY is not set.")
+    if not settings.llm_key:
+        print("No LLM key: set GEMINI_API_KEY or ANTHROPIC_API_KEY.")
         return 1
-    print(f"scan model {settings.scan_model}, judge model {settings.judge_model}, deadline {settings.deadline_s}s\n")
+    print(f"provider {settings.llm_provider}, scan model {settings.scan_model}, judge model {settings.judge_model}, "
+          f"deadline {settings.deadline_s}s\n")
     rows = []
     for i in range(1, rounds + 1):
+        if rpm and i > 1:
+            await asyncio.sleep(2 * 60 / rpm)  # each round makes two calls
         scan_out, judge_out, both_ms = await _round(i, settings.deadline_s)
         rows.append((scan_out, judge_out, both_ms))
         print(f"{i:>3}  scan {_describe(scan_out)}  judge {_describe(judge_out)}  both {both_ms} ms")
@@ -52,10 +57,15 @@ async def main(rounds: int) -> int:
     unknown = sum(r.verdict == "unknown" for s, j, _ in rows for r in (s, j))
     expected = sum(s.verdict == "clean" and j.verdict == "aligned" for s, j, _ in rows)
     print(f"\n{2 * rounds} calls: {unknown} unknown. Combined latency p50 {statistics.median(combined):.0f} ms, "
-          f"max {combined[-1]} ms (budget 3000 ms).")
+          f"max {combined[-1]} ms (deadline {settings.deadline_s * 1000:.0f} ms; "
+          f"the gateway's INTEL_TIMEOUT_MS must be higher).")
     print(f"Expected answers (scan clean, judge aligned): {expected}/{rounds} rounds.")
     return 0
 
 
 if __name__ == "__main__":
-    sys.exit(asyncio.run(main(int(sys.argv[1]) if len(sys.argv) > 1 else 20)))
+    parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument("rounds", nargs="?", type=int, default=20)
+    parser.add_argument("--rpm", type=int, default=0, help="stay under this many LLM requests per minute")
+    args = parser.parse_args()
+    sys.exit(asyncio.run(main(args.rounds, args.rpm)))

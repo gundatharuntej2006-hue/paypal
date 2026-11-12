@@ -16,9 +16,10 @@
 
 ## Open for submission
 
-- [ ] Deploy the sandbox stack and verify the hosted URL. The gateway and intelligence entry points are absent from this branch, and the expected Render hostnames returned 404 during freeze QA.
+- [x] Gateway and Intel are present on ritika. Both hosted health endpoints returned HTTP 200 in the previous deployment check.
+- [ ] Confirm the latest Intel deployment in Render, confirm the Gateway timeout is 7000 ms, and verify the final hosted dashboard URL. See [deployment checklist](deployment-checklist.md).
 - [ ] Verify live principal enrollment, mandate acceptance, buyer consent, approvals, SSE history and reconnect, and signed PayPal webhook delivery against the deployed gateway.
-- [ ] Publish a measured benchmark and verify provenance, coverage, and unavailable metrics with Tharun's adapter. The dashboard currently ships labeled sample data.
+- [ ] Publish a measured benchmark and verify provenance, coverage, and unavailable metrics with Tharun's adapter. Tharun supplies the measured JSON. His three exact test fixtures pass dashboard validation and rendering tests. The dashboard ships labeled sample data until a measured report is supplied.
 - [ ] Record, publish, and privately verify the final YouTube video.
 - [ ] Add all teammates, verify public links and the license, and confirm the Devpost submission.
 - [ ] Verify the Postman collection against the deployed sandbox gateway.

@@ -1,4 +1,5 @@
 import asyncio
+import json
 from types import SimpleNamespace
 
 import anthropic
@@ -7,6 +8,7 @@ import pytest
 from pydantic import BaseModel
 
 from intel import judge, llm, samples, scan
+from intel.config import get_settings
 from intel.models import JudgeRequest, ScanRequest
 
 
@@ -175,3 +177,129 @@ def test_wrapper_failure_reasons():
     assert reason_of(wrapper(SimpleNamespace(stop_reason="refusal", parsed_output=None))[0]) == "llm_refusal"
     assert reason_of(wrapper(anthropic.APITimeoutError(request=request))[0]) == "llm_timeout"
     assert reason_of(llm.LLMClient(api_key=None, scan_model="m", judge_model="m", timeout_s=1)) == "no_llm_key"
+
+
+# --- Gemini (plain HTTP) ---
+
+def gemini_reply(text, finish="STOP"):
+    return {"candidates": [{"content": {"parts": [{"text": text}]}, "finishReason": finish}]}
+
+
+def gemini(*replies):
+    seen = []
+
+    def handle(request):
+        seen.append(request)
+        reply = replies[len(seen) - 1]
+        return reply if isinstance(reply, httpx.Response) else httpx.Response(200, json=reply)
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+    client = llm.LLMClient(api_key="k", scan_model="m", judge_model="m", timeout_s=1, client=http, provider="gemini")
+    return client, seen
+
+
+def ask_gemini(client):
+    return asyncio.run(client.structured(model="gemini-2.5-flash-lite", system="s", user="u", output=Answer))
+
+
+def gemini_reason(client):
+    with pytest.raises(llm.LLMUnavailable) as error:
+        ask_gemini(client)
+    return error.value.reason
+
+
+def test_gemini_returns_parsed_output_and_keeps_key_out_of_url():
+    client, seen = gemini(gemini_reply('```json\n{"ok": true}\n```'))
+    assert ask_gemini(client).ok
+    request = seen[0]
+    body = json.loads(request.content)
+    assert request.headers["x-goog-api-key"] == "k" and "k" not in request.url.params
+    assert request.url.path.endswith("/models/gemini-2.5-flash-lite:generateContent")
+    assert body["generationConfig"]["thinkingConfig"] == {"thinkingBudget": 0}
+    assert '"ok"' in body["systemInstruction"]["parts"][0]["text"]  # schema is in the instructions
+
+
+def test_gemini_retries_malformed_output_once():
+    client, seen = gemini(gemini_reply("not json"), gemini_reply('{"ok": true}'))
+    assert ask_gemini(client).ok and len(seen) == 2
+
+
+def test_gemini_failure_reasons():
+    assert gemini_reason(gemini(httpx.Response(429, json={}))[0]) == "llm_rate_limited"
+    assert gemini_reason(gemini(httpx.Response(404, json={}))[0]) == "llm_http_404"
+    assert gemini_reason(gemini(gemini_reply("", finish="SAFETY"))[0]) == "llm_refusal"
+    assert gemini_reason(gemini({"promptFeedback": {"blockReason": "OTHER"}})[0]) == "llm_refusal"
+    assert gemini_reason(gemini(gemini_reply("{", "MAX_TOKENS"), gemini_reply("{", "MAX_TOKENS"))[0]) == "llm_truncated"
+    no_key = llm.LLMClient(api_key=None, scan_model="m", judge_model="m", timeout_s=1, provider="gemini")
+    assert gemini_reason(no_key) == "no_llm_key"
+
+
+def by_model(replies):
+    """A Gemini client whose fake server answers per model; returns it and the list of models called."""
+    called = []
+
+    def handle(request):
+        model = request.url.path.rsplit("/", 1)[-1].split(":")[0]
+        called.append(model)
+        reply = replies[model]
+        return reply if isinstance(reply, httpx.Response) else httpx.Response(200, json=reply)
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handle))
+    return llm.LLMClient(api_key="k", scan_model="m", judge_model="m", timeout_s=1, client=http, provider="gemini"), called
+
+
+DAILY_QUOTA_GONE = httpx.Response(429, json={"error": {"code": 429, "details": [
+    {"@type": "type.googleapis.com/google.rpc.QuotaFailure",
+     "violations": [{"quotaId": "GenerateRequestsPerDayPerProjectPerModel-FreeTier", "quotaValue": "20"}]},
+    {"@type": "type.googleapis.com/google.rpc.RetryInfo", "retryDelay": "48029s"},
+]}})
+
+
+def ask_chain(client, chain="a,b"):
+    return asyncio.run(client.structured(model=chain, system="s", user="u", output=Answer))
+
+
+def test_chain_moves_on_when_a_model_is_out_of_quota_and_rests_it():
+    client, called = by_model({"a": DAILY_QUOTA_GONE, "b": gemini_reply('{"ok": true}')})
+    assert ask_chain(client).ok and called == ["a", "b"]
+    assert ask_chain(client).ok and called == ["a", "b", "b"]  # "a" is skipped until Google's reset
+
+
+def test_chain_answers_at_once_when_every_model_is_resting():
+    client, called = by_model({"a": DAILY_QUOTA_GONE, "b": httpx.Response(503, json={})})
+    with pytest.raises(llm.LLMUnavailable) as first:
+        ask_chain(client)
+    assert first.value.reason == "llm_http_503" and called == ["a", "b"]
+    with pytest.raises(llm.LLMUnavailable) as second:
+        ask_chain(client)
+    assert second.value.reason == "llm_rate_limited" and called == ["a", "b"]  # no new requests
+
+
+def test_chain_stops_on_a_bad_key():
+    client, called = by_model({"a": httpx.Response(401, json={}), "b": gemini_reply('{"ok": true}')})
+    with pytest.raises(llm.LLMUnavailable) as error:
+        ask_chain(client)
+    assert error.value.reason == "llm_http_401" and called == ["a"]
+
+
+GEMINI_DEFAULT = "gemini-2.5-flash-lite,gemini-2.5-flash,gemini-3.5-flash-lite"
+
+
+@pytest.mark.parametrize("env,provider,model", [
+    ({"GEMINI_API_KEY": "g"}, "gemini", GEMINI_DEFAULT),
+    ({"ANTHROPIC_API_KEY": "a"}, "anthropic", "claude-haiku-5-5"),
+    ({"ANTHROPIC_API_KEY": "a", "GEMINI_API_KEY": "g", "LLM_PROVIDER": "gemini"}, "gemini", GEMINI_DEFAULT),
+    ({"GEMINI_API_KEY": "g", "INTEL_SCAN_MODEL": "gemini-x"}, "gemini", "gemini-x"),
+])
+def test_provider_follows_the_key(monkeypatch, env, provider, model):
+    for name in ("GEMINI_API_KEY", "ANTHROPIC_API_KEY", "LLM_PROVIDER", "INTEL_SCAN_MODEL", "INTEL_DEADLINE_S"):
+        monkeypatch.delenv(name, raising=False)
+    for name, value in env.items():
+        monkeypatch.setenv(name, value)
+    get_settings.cache_clear()
+    try:
+        settings = get_settings()
+        assert (settings.llm_provider, settings.scan_model, settings.llm_key is not None) == (provider, model, True)
+        assert settings.deadline_s == (6.0 if provider == "gemini" else 2.5)
+    finally:
+        get_settings.cache_clear()

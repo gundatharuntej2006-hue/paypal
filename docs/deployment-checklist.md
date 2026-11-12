@@ -2,10 +2,16 @@
 
 ## Deploy the dashboard
 
-- [ ] For the full sandbox stack, connect the Render Blueprint to **ritika** and complete [Render setup](render-setup.md). The gateway and intelligence entry points must exist on that branch before deploying the Blueprint.
-- [ ] For a browser-only preview while those services are pending, use Render **New > Static Site** with the same repository and **ritika** branch. Set **Root Directory** to `dashboard`, **Build Command** to `npm ci && npm run build`, and **Publish Directory** to `dist`. Set `VITE_USE_STUB=true` and add a rewrite from `/*` to `/index.html` under **Redirects/Rewrites**. Use a separate preview site name so the full Blueprint can keep `agentguard-dashboard`.
+- [ ] For the full sandbox stack, connect the Render Blueprint to **ritika** and complete [Render setup](render-setup.md). The gateway and Intel entry points are present on that branch. For existing services, use their Render website settings.
+- [ ] For a standalone stub preview, use Render **New > Static Site** with the same repository and **ritika** branch. Set **Root Directory** to `dashboard`, **Build Command** to `npm ci && npm run build`, and **Publish Directory** to `dist`. Set `VITE_USE_STUB=true` and add a rewrite from `/*` to `/index.html` under **Redirects/Rewrites**. Use a separate preview site name so the full Blueprint can keep `agentguard-dashboard`.
 - [ ] Verify the dashboard root and a direct `/ledger` visit return the app. For a full deploy, check `/health` on the gateway and intelligence URLs and confirm the gateway allows the exact dashboard origin.
 - [ ] For the live demo, enable sandbox demo mode and configure the server-side scenario trigger. Seed the ledger once using the manual command below.
+
+## Hosted checks
+
+1. In Render, confirm Intel deployed the commit containing Gemini fallback and the six-second Intel deadline. In the Gateway service environment, verify `INTEL_TIMEOUT_MS=7000` and `PAYPAL_ENV=sandbox`.
+2. Run `node dashboard/scripts/check-hosted.mjs https://<published-dashboard-host>` from the repo root. It checks Intel and Gateway health, the dashboard root and direct ledger route, and the Gateway CORS response. Run it about a minute before recording to wake both services.
+3. After the checks pass, run a sandbox payment and inspect the scan and judge events in **Payment Detail**. Confirm both have a verdict and rationale, then verify PayPal webhook delivery and the ledger event in the sandbox.
 
 ## Fresh-browser acceptance
 

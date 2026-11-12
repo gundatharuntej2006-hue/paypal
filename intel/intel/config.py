@@ -27,6 +27,24 @@ class Settings:
     ledger_token: str | None = None
     # Gateway base URL, used by reconciliation to read the ledger (defaults to LEDGER_URL's host)
     gateway_url: str | None = None
+    # Which LLM serves scan and judge
+    llm_provider: Literal["anthropic", "gemini"] = "anthropic"
+    gemini_api_key: str | None = None
+
+    @property
+    def llm_key(self) -> str | None:
+        return self.gemini_api_key if self.llm_provider == "gemini" else self.anthropic_api_key
+
+
+# Gemini's free tier allows about 20 requests a day per model, so the default is a chain of fast
+# models: when one runs out, the next one answers.
+DEFAULT_MODELS = {
+    "anthropic": "claude-haiku-5-5",
+    "gemini": "gemini-2.5-flash-lite,gemini-2.5-flash,gemini-3.5-flash-lite",  # fastest first
+}
+# Free-tier Gemini measured 1.4-1.7s warm and up to 4.3s on a first call (2026-11-12), so it gets
+# a longer deadline. The gateway's INTEL_TIMEOUT_MS must be above it (7000 for Gemini).
+DEFAULT_DEADLINE_S = {"anthropic": "2.5", "gemini": "6"}
 
 
 def _choice(name: str, default: str, allowed: tuple[str, ...]) -> str:
@@ -59,13 +77,19 @@ def _gateway_url(value: str | None, ledger_url: str | None) -> str | None:
 def get_settings() -> Settings:
     env = os.environ.get
     ledger_url = _ledger_url(env("LEDGER_URL"))
+    anthropic_key, gemini_key = env("ANTHROPIC_API_KEY") or None, env("GEMINI_API_KEY") or None
+    # Gemini when only its key is set; LLM_PROVIDER overrides.
+    provider = _choice("LLM_PROVIDER", "gemini" if gemini_key and not anthropic_key else "anthropic",
+                       ("anthropic", "gemini"))
     return Settings(
         mode=_choice("INTEL_MODE", "live", ("live", "stub")),  # type: ignore[arg-type]
         api_token=env("INTEL_API_TOKEN") or None,
-        anthropic_api_key=env("ANTHROPIC_API_KEY") or None,
-        scan_model=env("INTEL_SCAN_MODEL", "claude-haiku-5-5"),
-        judge_model=env("INTEL_JUDGE_MODEL", "claude-haiku-5-5"),
-        deadline_s=float(env("INTEL_DEADLINE_S", "2.5")),
+        anthropic_api_key=anthropic_key,
+        scan_model=env("INTEL_SCAN_MODEL") or DEFAULT_MODELS[provider],
+        judge_model=env("INTEL_JUDGE_MODEL") or DEFAULT_MODELS[provider],
+        llm_provider=provider,  # type: ignore[arg-type]
+        gemini_api_key=gemini_key,
+        deadline_s=float(env("INTEL_DEADLINE_S") or DEFAULT_DEADLINE_S[provider]),
         paypal_env=_choice("PAYPAL_ENV", "sandbox", ("sandbox", "live")),  # type: ignore[arg-type]
         paypal_client_id=env("PAYPAL_CLIENT_ID") or None,
         paypal_client_secret=env("PAYPAL_CLIENT_SECRET") or None,
