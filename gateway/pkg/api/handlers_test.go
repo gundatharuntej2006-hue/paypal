@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/google/uuid"
+
 	"gateway/pkg/config"
 	"gateway/pkg/crypto"
 	"gateway/pkg/events"
@@ -49,7 +51,7 @@ func createTestMandate(t *testing.T) (models.Mandate, string) {
 	}
 
 	m := models.Mandate{
-		MandateID:         "mdt_test_api",
+		MandateID:         "mdt_test_api_" + uuid.New().String()[:8],
 		PrincipalID:       "user_vivek",
 		AgentID:           "agent_shopper",
 		Task:              "Buy one USB-C hub under 40 USD",
@@ -61,7 +63,7 @@ func createTestMandate(t *testing.T) (models.Mandate, string) {
 		AllowedCategories: []string{"electronics"},
 		ValidFrom:         time.Now().Add(-1 * time.Hour),
 		ExpiresAt:         time.Now().Add(24 * time.Hour),
-		Nonce:             "nonce_api_" + time.Now().Format("20060102150405.000000"),
+		Nonce:             "nonce_api_" + uuid.New().String(),
 	}
 
 	if err := crypto.SignMandate(priv, &m); err != nil {
