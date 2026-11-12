@@ -87,7 +87,14 @@ func Load() *Config {
 		}
 	}
 
-	demoMode := os.Getenv("DEMO_MODE") == "true" || os.Getenv("DEMO_SANDBOX") == "1" || os.Getenv("ENABLE_DEMO") == "true"
+	paypalEnv := getEnv("PAYPAL_ENV", "sandbox")
+	demoMode := false
+	if os.Getenv("DEMO_MODE") == "true" || os.Getenv("DEMO_SANDBOX") == "1" || os.Getenv("ENABLE_DEMO") == "true" || strings.ToLower(paypalEnv) == "sandbox" || mockMode || gatewayMode == "dryrun" {
+		demoMode = true
+	}
+	if strings.ToLower(os.Getenv("DEMO_MODE")) == "false" {
+		demoMode = false
+	}
 
 	return &Config{
 		Port:                port,
