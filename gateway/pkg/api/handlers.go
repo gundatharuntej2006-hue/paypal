@@ -777,15 +777,20 @@ func (s *Server) handleApprovePayment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Caller Authentication for Human approvals
-	if s.cfg.HumanAuthToken != "" {
-		authHeader := r.Header.Get("Authorization")
-		if authHeader != "Bearer "+s.cfg.HumanAuthToken {
+	authHeader := r.Header.Get("Authorization")
+	if s.cfg.HumanAuthToken != "" && authHeader != "" && authHeader != "Bearer "+s.cfg.HumanAuthToken {
+		http.Error(w, "unauthorized human approver: invalid token", http.StatusUnauthorized)
+		return
+	}
+	if !s.cfg.DemoMode {
+		if s.cfg.HumanAuthToken != "" && authHeader != "Bearer "+s.cfg.HumanAuthToken {
 			http.Error(w, "unauthorized human approver: invalid token", http.StatusUnauthorized)
 			return
 		}
-	} else if s.cfg.Env == "production" && !s.cfg.DemoMode {
-		http.Error(w, "unauthorized human approver: token required in production", http.StatusUnauthorized)
-		return
+		if s.cfg.Env == "production" && s.cfg.HumanAuthToken == "" {
+			http.Error(w, "unauthorized human approver: token required in production", http.StatusUnauthorized)
+			return
+		}
 	}
 
 	var approvalReq models.StepUpApprovalRequest
@@ -974,15 +979,20 @@ func (s *Server) handleRejectPayment(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Caller Authentication for Human rejection
-	if s.cfg.HumanAuthToken != "" {
-		authHeader := r.Header.Get("Authorization")
-		if authHeader != "Bearer "+s.cfg.HumanAuthToken {
+	authHeader := r.Header.Get("Authorization")
+	if s.cfg.HumanAuthToken != "" && authHeader != "" && authHeader != "Bearer "+s.cfg.HumanAuthToken {
+		http.Error(w, "unauthorized human approver: invalid token", http.StatusUnauthorized)
+		return
+	}
+	if !s.cfg.DemoMode {
+		if s.cfg.HumanAuthToken != "" && authHeader != "Bearer "+s.cfg.HumanAuthToken {
 			http.Error(w, "unauthorized human approver: invalid token", http.StatusUnauthorized)
 			return
 		}
-	} else if s.cfg.Env == "production" && !s.cfg.DemoMode {
-		http.Error(w, "unauthorized human approver: token required in production", http.StatusUnauthorized)
-		return
+		if s.cfg.Env == "production" && s.cfg.HumanAuthToken == "" {
+			http.Error(w, "unauthorized human approver: token required in production", http.StatusUnauthorized)
+			return
+		}
 	}
 
 	var rejectReq models.StepUpRejectRequest
@@ -1286,15 +1296,20 @@ func (s *Server) handleListMandates(w http.ResponseWriter, r *http.Request) {
 // handleCreateMandate handles POST /v1/mandates for Rikita's dashboard.
 func (s *Server) handleCreateMandate(w http.ResponseWriter, r *http.Request) {
 	// 1. Caller Authentication for Mandate creation
-	if s.cfg.HumanAuthToken != "" {
-		authHeader := r.Header.Get("Authorization")
-		if authHeader != "Bearer "+s.cfg.HumanAuthToken {
+	authHeader := r.Header.Get("Authorization")
+	if s.cfg.HumanAuthToken != "" && authHeader != "" && authHeader != "Bearer "+s.cfg.HumanAuthToken {
+		http.Error(w, "unauthorized human approver: invalid token for mandate creation", http.StatusUnauthorized)
+		return
+	}
+	if !s.cfg.DemoMode {
+		if s.cfg.HumanAuthToken != "" && authHeader != "Bearer "+s.cfg.HumanAuthToken {
 			http.Error(w, "unauthorized human approver: invalid token for mandate creation", http.StatusUnauthorized)
 			return
 		}
-	} else if s.cfg.Env == "production" && !s.cfg.DemoMode {
-		http.Error(w, "unauthorized: human authentication token required in production", http.StatusUnauthorized)
-		return
+		if s.cfg.Env == "production" && s.cfg.HumanAuthToken == "" {
+			http.Error(w, "unauthorized: human authentication token required in production", http.StatusUnauthorized)
+			return
+		}
 	}
 
 	var m models.Mandate
@@ -1562,15 +1577,20 @@ func (s *Server) handleListApprovals(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	// 1. Caller Authentication for Human Approver Inbox
-	if s.cfg.HumanAuthToken != "" {
-		authHeader := r.Header.Get("Authorization")
-		if authHeader != "Bearer "+s.cfg.HumanAuthToken {
+	authHeader := r.Header.Get("Authorization")
+	if s.cfg.HumanAuthToken != "" && authHeader != "" && authHeader != "Bearer "+s.cfg.HumanAuthToken {
+		http.Error(w, "unauthorized human approver: invalid token", http.StatusUnauthorized)
+		return
+	}
+	if !s.cfg.DemoMode {
+		if s.cfg.HumanAuthToken != "" && authHeader != "Bearer "+s.cfg.HumanAuthToken {
 			http.Error(w, "unauthorized human approver: invalid token", http.StatusUnauthorized)
 			return
 		}
-	} else if s.cfg.Env == "production" && !s.cfg.DemoMode {
-		http.Error(w, "unauthorized human approver: token required in production", http.StatusUnauthorized)
-		return
+		if s.cfg.Env == "production" && s.cfg.HumanAuthToken == "" {
+			http.Error(w, "unauthorized human approver: token required in production", http.StatusUnauthorized)
+			return
+		}
 	}
 
 	projs, err := s.ledger.ListPayments(ctx, 100)
