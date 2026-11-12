@@ -12,7 +12,7 @@ services:
     healthCheckPath: /health
     envVars:
       - key: PORT
-        value: 8080
+        value: "8080"
       - key: ENV
         value: production
       - key: DB_DRIVER
@@ -27,7 +27,7 @@ services:
           name: agentguard-intel
           property: hostport
       - key: INTEL_TIMEOUT_MS
-        value: 7000
+        value: "7000"
       - key: INTEL_API_TOKEN
         generateValue: true
       - key: AGENT_AUTH_TOKEN
