@@ -12,6 +12,8 @@ The merged Blueprint uses `intel`, `pip install -e .`, and `uvicorn intel.main:a
 
 The [Render Blueprint setup guide](https://render.com/docs/infrastructure-as-code) shows the connection and deployment screens.
 
+The current [public dashboard](https://agentguard-dashboard-ihnx.onrender.com) is deployed as a Render Static Site. Its live browser client connects to the hosted Gateway.
+
 ## Environment variables
 
 | Resource | Variable | Value |

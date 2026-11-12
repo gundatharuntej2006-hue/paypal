@@ -14,10 +14,16 @@
 - [x] Devpost copy, submission checklist, and final QA walkthrough (M)
 - [x] Postman collection and environment verified against a local fixture (M)
 
+## Hosted verification
+
+- [x] The [public dashboard](https://agentguard-dashboard-ihnx.onrender.com) loaded and refreshed on all primary routes. Live Gateway health, ledger history and SSE were reachable.
+- [x] The PayPal consent screen loaded the SDK with a configured client ID. Sandbox account ownership and order creation still need verification.
+- [ ] Gateway mandate and approval lists currently return HTTP 404. The measured static benchmark report is pending.
+
 ## Open for submission
 
 - [x] Gateway and Intel are present on ritika. Both hosted health endpoints returned HTTP 200 in the previous deployment check.
-- [ ] Confirm the latest Intel deployment in Render, confirm the Gateway timeout is 7000 ms, and verify the final hosted dashboard URL. See [deployment checklist](deployment-checklist.md).
+- [ ] Confirm the latest Intel deployment in Render, confirm the Gateway timeout is 7000 ms, and complete the hosted sandbox payment walkthrough. See [deployment checklist](deployment-checklist.md).
 - [ ] Verify live principal enrollment, mandate acceptance, buyer consent, approvals, SSE history and reconnect, and signed PayPal webhook delivery against the deployed gateway.
 - [ ] Publish a measured benchmark and verify provenance, coverage, and unavailable metrics with Tharun's adapter. Tharun supplies the measured JSON. His three exact test fixtures pass dashboard validation and rendering tests. The dashboard ships labeled sample data until a measured report is supplied.
 - [ ] Record, publish, and privately verify the final YouTube video.

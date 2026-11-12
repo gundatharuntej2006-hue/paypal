@@ -109,7 +109,7 @@ The proposed stack requires Go, Python 3, Postgres, and a PayPal Sandbox applica
 
 ## Hosted demo
 
-**Hosted URL** `https://<published-dashboard-host>` <!-- VERIFY -->
+**Hosted dashboard** [AgentGuard on Render](https://agentguard-dashboard-ihnx.onrender.com). The Live Ledger connects to the hosted Gateway. See the [deployment checklist](docs/deployment-checklist.md) for outstanding sandbox checks.
 
 Use the [Render setup guide](docs/render-setup.md) and [private-browser deployment checklist](docs/deployment-checklist.md). The checklist includes a standalone static-site option for the browser-only demo.
 

@@ -5,7 +5,7 @@
 | Submission link | Value |
 | --- | --- |
 | Repository | [AgentGuard on GitHub, ritika branch](https://github.com/gundatharuntej2006-hue/paypal/tree/ritika) |
-| Hosted dashboard | **FINAL URL PENDING** |
+| Hosted dashboard | [AgentGuard Dashboard](https://agentguard-dashboard-ihnx.onrender.com) |
 | Public YouTube video | **FINAL URL PENDING** |
 | Devpost project | **FINAL URL PENDING** |
 
