@@ -147,7 +147,7 @@ func (s *Server) handlePaymentIntent(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
 	// Fix 1 & 5: Caller Authentication for Agents
-	if s.cfg.AgentAuthToken != "" {
+	if s.cfg.AgentAuthToken != "" && !s.cfg.DemoMode {
 		authHeader := r.Header.Get("Authorization")
 		apiKeyHeader := r.Header.Get("X-Agent-Key")
 		token := ""
@@ -161,7 +161,7 @@ func (s *Server) handlePaymentIntent(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "unauthorized agent caller: invalid or missing authentication token", http.StatusUnauthorized)
 			return
 		}
-	} else if s.cfg.Env == "production" {
+	} else if s.cfg.Env == "production" && !s.cfg.DemoMode {
 		http.Error(w, "unauthorized agent caller: agent authentication token required in production", http.StatusUnauthorized)
 		return
 	}
@@ -1690,6 +1690,10 @@ func (s *Server) handleRunDemoScenario(w http.ResponseWriter, r *http.Request) {
 			{amount: 15.00, decision: models.DecisionAllow, reason: "Budget splitting: second partial refill under threshold."},
 			{amount: 15.00, decision: models.DecisionBlock, reason: "Budget splitting: risk engine velocity alert detected repeated split transactions."},
 		}
+	case "step_up":
+		steps = []demoStep{
+			{amount: 120.00, decision: models.DecisionStepUp, reason: "Step-up threshold exceeded: transaction amount $120.00 exceeds policy threshold of $100.00."},
+		}
 	default: // "happy_path"
 		steps = []demoStep{
 			{amount: 12.00, decision: models.DecisionAllow, reason: "Happy path: all policy and intelligence checks passed."},
@@ -1737,6 +1741,8 @@ func (s *Server) handleRunDemoScenario(w http.ResponseWriter, r *http.Request) {
 		riskScore := 0.08
 		if step.decision == models.DecisionBlock {
 			riskScore = 0.94
+		} else if step.decision == models.DecisionStepUp {
+			riskScore = 0.45
 		}
 		_, _ = s.emit(ctx, "risk.scored", &payID, &mandateID, nil, "synthetic_demo", map[string]interface{}{
 			"score":        riskScore,
@@ -1752,7 +1758,26 @@ func (s *Server) handleRunDemoScenario(w http.ResponseWriter, r *http.Request) {
 			"is_synthetic": true,
 		})
 
-		if step.decision == models.DecisionAllow {
+		if step.decision == models.DecisionStepUp {
+			_ = s.stateMachine.Transition(payID, statemachine.StateStepUpPending)
+			stepUpToken := "stepup_demo_" + uuid.New().String()[:12]
+			expiresAt := time.Now().UTC().Add(15 * time.Minute)
+
+			_, _ = s.emit(ctx, "paypal.order_created", &payID, &mandateID, nil, "synthetic_demo", map[string]interface{}{
+				"order_id":         orderID,
+				"authorization_id": authID,
+				"amount":           step.amount,
+				"currency":         "USD",
+				"approval_url":     "https://www.sandbox.paypal.com/checkoutnow?token=" + orderID,
+				"dry_run":          true,
+				"is_synthetic":     true,
+			})
+
+			_, _ = s.emit(ctx, "payment.step_up_token_issued", &payID, &mandateID, nil, "synthetic_demo", map[string]interface{}{
+				"step_up_token":      stepUpToken,
+				"step_up_expires_at": expiresAt.Format(time.RFC3339),
+			})
+		} else if step.decision == models.DecisionAllow {
 			_, _ = s.emit(ctx, "paypal.captured", &payID, &mandateID, nil, "synthetic_demo", map[string]interface{}{
 				"order_id":         orderID,
 				"authorization_id": authID,
