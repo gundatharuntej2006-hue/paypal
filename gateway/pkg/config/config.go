@@ -25,6 +25,7 @@ type Config struct {
 	RiskStepUpThreshold float64
 
 	GatewayMode        string // "dryrun", "mock", "live"
+	DemoMode           bool
 	PayPalEnv          string
 	PayPalClientID     string
 	PayPalClientSecret string
@@ -86,6 +87,8 @@ func Load() *Config {
 		}
 	}
 
+	demoMode := os.Getenv("DEMO_MODE") == "true" || os.Getenv("DEMO_SANDBOX") == "1" || os.Getenv("ENABLE_DEMO") == "true"
+
 	return &Config{
 		Port:                port,
 		BindAddr:            bindAddr,
@@ -101,6 +104,7 @@ func Load() *Config {
 		RiskBlockThreshold:  blockThresh,
 		RiskStepUpThreshold: stepUpThresh,
 		GatewayMode:         gatewayMode,
+		DemoMode:            demoMode,
 		PayPalEnv:           getEnv("PAYPAL_ENV", "sandbox"),
 		PayPalClientID:      clientID,
 		PayPalClientSecret:  clientSecret,

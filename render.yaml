@@ -48,6 +48,8 @@ services:
         sync: false
       - key: PAYPAL_MOCK_MODE
         value: "false"
+      - key: DEMO_MODE
+        value: "true"
 
   # -------------------------------------------------------------
   # 2. Intelligence Service (FastAPI) - Workstream B (Atul)

@@ -783,7 +783,7 @@ func (s *Server) handleApprovePayment(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "unauthorized human approver: invalid token", http.StatusUnauthorized)
 			return
 		}
-	} else if s.cfg.Env == "production" {
+	} else if s.cfg.Env == "production" && !s.cfg.DemoMode {
 		http.Error(w, "unauthorized human approver: token required in production", http.StatusUnauthorized)
 		return
 	}
@@ -980,7 +980,7 @@ func (s *Server) handleRejectPayment(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "unauthorized human approver: invalid token", http.StatusUnauthorized)
 			return
 		}
-	} else if s.cfg.Env == "production" {
+	} else if s.cfg.Env == "production" && !s.cfg.DemoMode {
 		http.Error(w, "unauthorized human approver: token required in production", http.StatusUnauthorized)
 		return
 	}
@@ -1292,7 +1292,7 @@ func (s *Server) handleCreateMandate(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "unauthorized human approver: invalid token for mandate creation", http.StatusUnauthorized)
 			return
 		}
-	} else if s.cfg.Env == "production" {
+	} else if s.cfg.Env == "production" && !s.cfg.DemoMode {
 		http.Error(w, "unauthorized: human authentication token required in production", http.StatusUnauthorized)
 		return
 	}
@@ -1568,7 +1568,7 @@ func (s *Server) handleListApprovals(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "unauthorized human approver: invalid token", http.StatusUnauthorized)
 			return
 		}
-	} else if s.cfg.Env == "production" {
+	} else if s.cfg.Env == "production" && !s.cfg.DemoMode {
 		http.Error(w, "unauthorized human approver: token required in production", http.StatusUnauthorized)
 		return
 	}
@@ -1635,8 +1635,8 @@ func (s *Server) handleListApprovals(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleRunDemoScenario(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 
-	// 1. Strictly forbid demo execution in production
-	if s.cfg.Env == "production" {
+	// 1. Strictly forbid demo execution in production unless DemoMode is enabled
+	if s.cfg.Env == "production" && !s.cfg.DemoMode {
 		http.Error(w, "demo runner is strictly disabled in production", http.StatusForbidden)
 		return
 	}
