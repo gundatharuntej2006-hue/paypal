@@ -2,6 +2,8 @@
 
 from collections import Counter
 from dataclasses import asdict
+from datetime import datetime, timezone
+from uuid import uuid4
 from hashlib import sha256
 import json
 import math
@@ -70,6 +72,7 @@ def run_benchmark(scenarios, executors: dict[str, Executor] | None = None) -> di
             raise ValueError("only synthetic test-double executors are enabled")
         if not isinstance(executor.name, str) or not executor.name.isidentifier():
             raise ValueError("executor name must be a public identifier")
+    run_id = str(uuid4())
     digest = sha256(json.dumps([s.to_dict() for s in cases], sort_keys=True, ensure_ascii=False).encode()).hexdigest()
     runs = {}
     for system in SYSTEMS:
@@ -96,7 +99,8 @@ def run_benchmark(scenarios, executors: dict[str, Executor] | None = None) -> di
                         "synthetic": executor is not None, "records": records, "metrics": calculate_metrics(records)}
     paired = [(a, b) for a, b in zip(runs["llm_only"]["records"], runs["full_stack"]["records"])
               if a["outcome"] == b["outcome"] == "observed"]
-    return {"report_version": 1, "methodology": methodology_metadata(), "mode": "test_double" if executors else "validation",
+    return {"run_id": run_id, "generated_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "report_version": 1, "methodology": methodology_metadata(), "mode": "test_double" if executors else "validation",
             "data_source": "synthetic_test_double" if executors else "not_executed", "synthetic": bool(executors),
             "notice": "Synthetic infrastructure test; NOT AgentGuard security performance." if executors else
                       "Definitions validated only; security behavior was not executed or measured.",

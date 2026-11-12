@@ -69,7 +69,7 @@ def test_rich_records_preserve_per_arm_metadata_without_inventing_results():
     # Dashboard deliberately rejects mixed executed/unexecuted arm provenance.
     # Check the unchanged summary contract with a consistently unexecuted report.
     summary = dashboard_summary(run_benchmark(load_scenarios()))
-    assert set(summary) == {"report_version", "provenance", "by_class", "ablation"}
+    assert set(summary) == {"report_version", "provenance", "by_class", "ablation", "run_id", "generated_at"}
 
 
 def test_methodology_discloses_calibration_without_filling_active_version():

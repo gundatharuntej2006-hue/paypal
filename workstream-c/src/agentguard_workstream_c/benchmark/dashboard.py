@@ -6,6 +6,7 @@ Explicit data_source='genuine' is supported for future imported reports, never
 inferred from records, flags, or timings. No current executor emits that marker.
 """
 
+from datetime import datetime
 from collections import Counter
 from collections.abc import Mapping
 import math
@@ -206,4 +207,20 @@ def dashboard_summary(report: Mapping[str, Any]) -> dict:
                        p95_latency_ms=samples[math.ceil(0.95 * len(samples)) - 1] if samples else None,
                        latency_sample_count=len(samples))
         arms[system] = arm
-    return {"report_version": 1, "provenance": provenance, "by_class": full_classes, "ablation": arms}
+    summary = {"report_version": 1, "provenance": provenance, "by_class": full_classes, "ablation": arms}
+    # Preserve runtime metadata; importing historical reports never invents it.
+    for field in ("run_id", "generated_at"):
+        value = report.get(field)
+        if value is None:
+            continue
+        if not isinstance(value, str) or not value.strip():
+            raise DashboardReportError(f"{field} must be a nonblank string when supplied")
+        if field == "generated_at":
+            try:
+                timestamp = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                if timestamp.utcoffset() is None:
+                    raise ValueError
+            except ValueError:
+                raise DashboardReportError("generated_at must be a timezone-qualified ISO timestamp") from None
+        summary[field] = value
+    return summary

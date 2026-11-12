@@ -82,7 +82,7 @@ def fixture_source(name):
 
 
 def assert_contract(summary):
-    assert set(summary) == {"report_version", "provenance", "by_class", "ablation"}
+    assert set(summary) - {"run_id", "generated_at"} == {"report_version", "provenance", "by_class", "ablation"}
     assert type(summary["report_version"]) is int and summary["report_version"] == 1
     assert summary["provenance"] in ("genuine", "synthetic", "unexecuted")
     assert [c["name"] for c in summary["by_class"]] == list(CATEGORIES)
@@ -125,7 +125,11 @@ def test_exact_contract_fixtures_match_adapter(name):
 
     fixture = json.loads((FIXTURES / (name + ".json")).read_text(encoding="utf-8"),
                          parse_constant=reject_constant, object_pairs_hook=unique)
-    result = dashboard_summary(fixture_source(name))
+    source = fixture_source(name)
+    # Static examples predate runtime metadata; do not fabricate fixture values.
+    source.pop("run_id", None)
+    source.pop("generated_at", None)
+    result = dashboard_summary(source)
     assert_contract(fixture)
     assert result == fixture
 
@@ -449,3 +453,22 @@ def test_cached_latency_and_float_aggregates_are_not_used_as_integer_counter_evi
     metrics.update(latency_samples=99, median_latency_ms=999, false_positive_rate=0.0)
     metrics["by_attack_category"][CATEGORIES[0]]["block_rate"] = 0.75
     assert dashboard_summary(report) == before
+
+
+@pytest.mark.parametrize("field,value", [
+    ("run_id", " "), ("run_id", 1), ("generated_at", "not-a-date"),
+    ("generated_at", "2026-11-12T10:00:00"), ("generated_at", 1),
+])
+def test_invalid_optional_runtime_metadata(field, value):
+    report = run_benchmark(CASES)
+    report[field] = value
+    with pytest.raises(DashboardReportError, match=field):
+        dashboard_summary(report)
+
+
+def test_absent_or_null_metadata_is_not_invented():
+    report = run_benchmark(CASES)
+    report.pop("run_id")
+    report["generated_at"] = None
+    summary = dashboard_summary(report)
+    assert "run_id" not in summary and "generated_at" not in summary

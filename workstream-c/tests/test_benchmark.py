@@ -164,7 +164,10 @@ def test_validation_mode_has_no_invented_measurements():
 def test_synthetic_execution_ablation_and_reports():
     doubles = {system: DeterministicTestDouble() for system in ("llm_only", "full_stack")}
     report = run_benchmark(CASES, doubles)
-    assert report == run_benchmark(reversed(CASES), doubles)
+    reordered = run_benchmark(reversed(CASES), doubles)
+    assert {k: v for k, v in report.items() if k not in ("run_id", "generated_at")} == {
+        k: v for k, v in reordered.items() if k not in ("run_id", "generated_at")}
+    assert report["run_id"] != reordered["run_id"]
     assert report["synthetic"] is True and report["data_source"] == "synthetic_test_double"
     assert report["ablation"]["paired_observed"] == 80
     a, b = report["runs"].values()
@@ -288,3 +291,24 @@ def test_cli_rejects_live_mode_and_bad_library(tmp_path, capsys):
     with pytest.raises(SystemExit) as exc:
         main(["--scenarios", str(tmp_path)])
     assert exc.value.code == 2
+
+
+@pytest.mark.parametrize("synthetic", [False, True])
+def test_runtime_metadata_survives_repeated_serialization(synthetic):
+    from datetime import datetime, timezone
+    from uuid import UUID
+    from agentguard_workstream_c.benchmark.dashboard import dashboard_summary
+
+    before = datetime.now(timezone.utc)
+    report = run_benchmark(CASES, {arm: DeterministicTestDouble() for arm in ("full_stack", "llm_only")} if synthetic else None)
+    after = datetime.now(timezone.utc)
+    assert UUID(report["run_id"]).version == 4
+    assert report["generated_at"].endswith("Z")
+    assert before <= datetime.fromisoformat(report["generated_at"]) <= after
+    first = json_report(report)
+    summary = dashboard_summary(report)
+    assert summary["run_id"] == report["run_id"]
+    assert summary["generated_at"] == report["generated_at"]
+    assert json_report(report) == first
+    assert dashboard_summary(report) == summary
+    assert report["data_source"] == ("synthetic_test_double" if synthetic else "not_executed")
