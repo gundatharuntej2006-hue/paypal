@@ -9,14 +9,20 @@ export const useStub = import.meta.env.VITE_USE_STUB !== 'false';
 const gateway = (import.meta.env.VITE_GATEWAY_URL || 'http://localhost:8080').replace(/\/+$/, '');
 
 export class GatewayError extends Error {
-  constructor(readonly status: number) {
-    super('Gateway returned HTTP ' + status + '.');
+  constructor(readonly status: number, message = 'Gateway returned HTTP ' + status + '.') {
+    super(message);
   }
 }
 
 async function request<T>(path: string, options?: RequestInit): Promise<T> {
   const response = await fetch(gateway + '/v1' + path, options);
-  if (!response.ok) throw new GatewayError(response.status);
+  if (!response.ok) {
+    const unavailable = response.status === 404 && {
+      '/mandates': 'The Gateway mandate service is unavailable (HTTP 404).',
+      '/approvals': 'The Gateway approval inbox is unavailable (HTTP 404).',
+    }[path as '/mandates' | '/approvals'];
+    throw new GatewayError(response.status, unavailable || undefined);
+  }
   return response.json() as Promise<T>;
 }
 
@@ -92,14 +98,7 @@ const live: typeof stub = {
     const result = await request<{ timeline: unknown }>('/payments/' + encodeURIComponent(id));
     return normalizeGatewayEvents(result.timeline);
   },
-  async listApprovals() {
-    try {
-      return await request<ApprovalPayment[]>('/approvals');
-    } catch (error) {
-      if (error instanceof GatewayError && error.status === 404) return [];
-      throw error;
-    }
-  },
+  listApprovals: () => request<ApprovalPayment[]>('/approvals'),
   approve: (id, orderId) => review(id, 'approve', orderId),
   reject: (id, reason) => review(id, 'reject', reason),
   subscribeEvents(onEvent, paymentId, onConnection) {
