@@ -94,7 +94,78 @@ func NewServer(
 	}
 	s.mandates[demoOffice.MandateID] = demoOffice
 
+	// Pre-seed demo step-up payments when DemoMode is enabled so inbox always has review items
+	if s.cfg != nil && s.cfg.DemoMode {
+		s.seedDemoStepUpPayment("pay_demo_stepup_1", "120.00", "Office Depot", "DEMO-ORDER-STEPUP-1")
+		s.seedDemoStepUpPayment("pay_demo_stepup_2", "135.00", "Office Depot", "DEMO-ORDER-STEPUP-2")
+	}
+
 	return s
+}
+
+// seedDemoStepUpPayment registers a synthetic step-up payment for demo dashboard flows.
+func (s *Server) seedDemoStepUpPayment(paymentID, amount, merchant, orderID string) {
+	ctx := context.Background()
+	mandateID := "mdt_demo_office"
+	reason := fmt.Sprintf("Step-up threshold exceeded: transaction amount $%s exceeds policy threshold of $100.00.", amount)
+	stepUpToken := "stepup_token_" + paymentID
+	expiresAt := time.Now().UTC().Add(24 * time.Hour)
+
+	_, _ = s.emit(ctx, "intent.received", &paymentID, &mandateID, nil, "synthetic_demo", map[string]interface{}{
+		"merchant_id":  merchant,
+		"amount":       amount,
+		"currency":     "USD",
+		"items":        []map[string]interface{}{{"name": "Office Supplies Refill", "qty": 1, "unit_price": amount}},
+		"dry_run":      true,
+		"is_synthetic": true,
+		"demo_mode":    true,
+	})
+	_, _ = s.emit(ctx, "mandate.verified", &paymentID, &mandateID, nil, "synthetic_demo", map[string]interface{}{
+		"result":       "pass",
+		"is_synthetic": true,
+	})
+	_, _ = s.emit(ctx, "scan.completed", &paymentID, &mandateID, nil, "synthetic_demo", map[string]interface{}{
+		"injection_suspected": false,
+		"rationale":           reason,
+		"snippets":            []string{"Standard office refill"},
+		"is_synthetic":        true,
+	})
+	_, _ = s.emit(ctx, "judge.completed", &paymentID, &mandateID, nil, "synthetic_demo", map[string]interface{}{
+		"aligned":                true,
+		"confidence":             0.98,
+		"rationale":              reason,
+		"influenced_by_external": false,
+		"is_synthetic":           true,
+	})
+	_, _ = s.emit(ctx, "risk.scored", &paymentID, &mandateID, nil, "synthetic_demo", map[string]interface{}{
+		"score":        0.45,
+		"factors":      []string{reason},
+		"is_synthetic": true,
+	})
+	_, _ = s.emit(ctx, "decision.made", &paymentID, &mandateID, nil, "synthetic_demo", map[string]interface{}{
+		"payment_id":   paymentID,
+		"decision":     models.DecisionStepUp,
+		"risk_score":   0.45,
+		"reasons":      []string{reason},
+		"is_synthetic": true,
+	})
+
+	s.stateMachine.SetState(paymentID, statemachine.StateStepUpPending)
+
+	_, _ = s.emit(ctx, "paypal.order_created", &paymentID, &mandateID, nil, "synthetic_demo", map[string]interface{}{
+		"order_id":         orderID,
+		"authorization_id": "AUTH-" + orderID,
+		"amount":           amount,
+		"currency":         "USD",
+		"approval_url":     "https://www.sandbox.paypal.com/checkoutnow?token=" + orderID,
+		"dry_run":          true,
+		"is_synthetic":     true,
+	})
+
+	_, _ = s.emit(ctx, "payment.step_up_token_issued", &paymentID, &mandateID, nil, "synthetic_demo", map[string]interface{}{
+		"step_up_token":      stepUpToken,
+		"step_up_expires_at": expiresAt.Format(time.RFC3339),
+	})
 }
 
 // SetDryRunClient allows tests to inject an instrumented dry-run client.
@@ -1759,7 +1830,7 @@ func (s *Server) handleRunDemoScenario(w http.ResponseWriter, r *http.Request) {
 		})
 
 		if step.decision == models.DecisionStepUp {
-			_ = s.stateMachine.Transition(payID, statemachine.StateStepUpPending)
+			s.stateMachine.SetState(payID, statemachine.StateStepUpPending)
 			stepUpToken := "stepup_demo_" + uuid.New().String()[:12]
 			expiresAt := time.Now().UTC().Add(15 * time.Minute)
 

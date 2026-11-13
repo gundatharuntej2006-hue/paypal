@@ -94,6 +94,13 @@ func (sm *StateMachine) Init(paymentID string) error {
 	return nil
 }
 
+// SetState directly sets the state of a payment without transition checks (for seeding and demo runs).
+func (sm *StateMachine) SetState(paymentID string, state PaymentState) {
+	sm.mu.Lock()
+	defer sm.mu.Unlock()
+	sm.states[paymentID] = state
+}
+
 // Get returns the current state of a payment.
 func (sm *StateMachine) Get(paymentID string) (PaymentState, error) {
 	sm.mu.RLock()
