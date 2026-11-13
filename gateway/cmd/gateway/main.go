@@ -64,8 +64,8 @@ func main() {
 		principalRegistry.RegisterPrincipal(cfg.TestPrincipalID, cfg.TestPrincipalPublicKey)
 		log.Printf("[gateway] 🔑 pre-registered test principal '%s'", cfg.TestPrincipalID)
 	}
-	// In development or dry-run mode, also pre-seed standard test vector principals
-	if cfg.Env != "production" || cfg.GatewayMode == "dryrun" {
+	// In development, dry-run, or demo mode, pre-seed standard test vector principals
+	if cfg.Env != "production" || cfg.GatewayMode == "dryrun" || cfg.DemoMode {
 		principalRegistry.RegisterPrincipal("principal_cross_lang", "ebVWLo/mVPlAeLES6KmLp5AfhTrmlb7X4OORC60ElmQ=")
 		principalRegistry.RegisterPrincipal("user_vivek", "+QrsGHy80RVVR5btBnZ26hkL+aJ9ZbqWJVAffz7v5gE=")
 	}
