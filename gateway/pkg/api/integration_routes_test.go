@@ -286,6 +286,47 @@ func TestIntegrationRoutes_DemoRunAndBenchmark(t *testing.T) {
 		t.Fatalf("expected 200 from budget_splitting, got %d", rec.Code)
 	}
 
+	// 3b. POST /v1/demo/run with step_up
+	demoReq.Scenario = "step_up"
+	body, _ = json.Marshal(demoReq)
+	req = httptest.NewRequest(http.MethodPost, "/v1/demo/run", bytes.NewReader(body))
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 from step_up demo run, got %d", rec.Code)
+	}
+
+	// Verify approvals list contains step-up payments
+	req = httptest.NewRequest(http.MethodGet, "/v1/approvals", nil)
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 from GET /v1/approvals, got %d", rec.Code)
+	}
+	var approvalsList []map[string]interface{}
+	_ = json.NewDecoder(rec.Body).Decode(&approvalsList)
+	if len(approvalsList) == 0 {
+		t.Fatalf("expected approvals list to contain items")
+	}
+	samplePaymentID := approvalsList[0]["payment_id"].(string)
+
+	// Verify GET /v1/payments/{id} returns 200
+	req = httptest.NewRequest(http.MethodGet, "/v1/payments/"+samplePaymentID, nil)
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 from GET /v1/payments/%s, got %d", samplePaymentID, rec.Code)
+	}
+
+	// Verify approving the payment returns 200 OK
+	approveBody, _ := json.Marshal(map[string]interface{}{})
+	req = httptest.NewRequest(http.MethodPost, "/v1/payments/"+samplePaymentID+"/approve", bytes.NewReader(approveBody))
+	rec = httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 from approving demo payment %s, got %d: %s", samplePaymentID, rec.Code, rec.Body.String())
+	}
+
 	// 4. GET /v1/benchmark/report
 	req = httptest.NewRequest(http.MethodGet, "/v1/benchmark/report", nil)
 	rec = httptest.NewRecorder()
